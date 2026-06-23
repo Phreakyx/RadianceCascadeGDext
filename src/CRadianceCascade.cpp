@@ -1355,15 +1355,15 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     if (_gpu_profile)
     {
         uint32_t n = _rd->get_captured_timestamps_count();
-        double prev = 0.0; String prev_name;
+        double prev = 0.0; bool have_prev = false;
         for (uint32_t i = 0; i < n; ++i)
         {
             String nm = _rd->get_captured_timestamp_name(i);
             if (!nm.begins_with("rc_")) continue;
-            double t = (double) _rd->get_captured_timestamp_gpu_time(i);   // microseconds
-            if (!prev_name.is_empty())
-                print_line(vformat("[GPU] %-16s %.1f us", prev_name, t - prev));
-            prev = t; prev_name = nm;
+            double t = (double) _rd->get_captured_timestamp_gpu_time(i);   // raw is ns on this build
+            if (have_prev)
+                print_line(vformat("[GPU] %-16s %.1f us", nm, (t - prev) / 1000.0));   // nm = pass ending here
+            prev = t; have_prev = true;
         }
     }
 
