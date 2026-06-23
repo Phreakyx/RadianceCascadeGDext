@@ -10,7 +10,7 @@ pipeline but that is a limitation for example not having access to the albedo
 G buffer and due to that the plugin is currently purely additive.
 
 It uses a dynamic voxelizaiton pipeline that updates as a player moves in real time.
-For more info check https://github.com/Phreakyx/RadianceCascadeGDext/blob/main/ARCHITECTURE.md
+For more info check [Architecture](ARCHITECTURE.md) and [Implementation Analysis](ANALYSIS.md)
 
 ## Contents
 
