@@ -1,0 +1,105 @@
+#ifndef RC_PATCH_GATHER_INC
+#define RC_PATCH_GATHER_INC
+
+#ifndef GATHER_SET
+#define GATHER_SET 2
+#endif
+
+const float PI         = 3.14159265359;
+const uint  EMPTY      = 0xffffffffu;
+const uint  INVALID    = 0xffffffffu;
+const uint  MAX_LINEAR = 64u;
+
+struct CascadeDesc {
+    float spacing; float t_start; float t_end; float aperture;
+    uint  dirs;    uint  oct_res; uint  bucket_off; uint  bucket_cap;
+    uint  probe_off; uint probe_cap; uint rad_off; uint _p0;
+};
+
+layout(set = GATHER_SET, binding = 0, std430) readonly buffer GBuckets   { uvec2 buckets[]; };
+layout(set = GATHER_SET, binding = 2, std430) readonly buffer GProbeKeys { ivec4 probe_keys[]; };
+layout(set = GATHER_SET, binding = 5, std140) uniform GCameraData {
+    mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view; vec2 jitter; vec2 _pad;
+} cam;
+layout(set = GATHER_SET, binding = 6, std430) readonly buffer GProbeRad  { uvec2 probe_radiance[]; };
+layout(set = GATHER_SET, binding = 7, std430) readonly buffer GCascades  { CascadeDesc cascades[]; };
+
+uint g_hash_ivec4(ivec4 k) {
+    uint h = uint(k.x)*73856093u ^ uint(k.y)*19349663u ^ uint(k.z)*83492791u ^ uint(k.w)*2654435761u;
+    h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
+}
+uint g_find_in_region(ivec4 key, uint boff, uint bcap) {
+    uint h = g_hash_ivec4(key); if (h == EMPTY) h = 1u;
+    uint slot = boff + (h % bcap);
+    for (uint p = 0u; p < MAX_LINEAR; ++p) {
+        uvec2 b = buckets[slot];
+        if (b.x == EMPTY) return INVALID;
+        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key) return b.y;
+        slot = boff + ((slot - boff + 1u) % bcap);
+    }
+    return INVALID;
+}
+vec3 g_oct_to_dir(vec2 e) {
+    e = e * 2.0 - 1.0;
+    vec3 v = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * sign(v.xy);
+    return normalize(v);
+}
+vec4 g_samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {
+    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
+    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
+    return vec4(rg, ba.x, ba.y);   // rgb radiance + residual transparency
+}
+
+// Reconstruct world from a pixel + linear depth at an arbitrary resolution (pass the dims).
+vec3 g_screen_to_world(vec2 sc, float lin_depth, vec2 dims) {
+    vec2 ndc = (sc + 0.5) / dims * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+    vec4 vh = cam.inv_proj * vec4(ndc, 1.0, 1.0);
+    vec3 vd = vh.xyz / vh.w;
+    return (cam.inv_view * vec4(vd * (lin_depth / -vd.z), 1.0)).xyz;
+}
+
+// The c0 8-probe trilinear blend + cosine integrate. Returns vec4(irradiance, hit) where
+// hit==0 means no probe was found here (caller should keep its own fallback, not darken).
+vec4 gather_c0_irradiance(vec3 world, vec3 n, vec3 sky_color) {
+    CascadeDesc cd = cascades[0];
+    vec3  sp = world / cd.spacing - 0.5;
+    ivec3 b  = ivec3(floor(sp));
+    vec3  f  = sp - vec3(b);
+    uint  nidx[8]; float nw[8]; float wsum = 0.0;
+    for (int o = 0; o < 8; ++o) {
+        ivec3 off  = ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
+        ivec3 cell = b + off;
+        uint  id   = g_find_in_region(ivec4(cell, 0), cd.bucket_off, cd.bucket_cap);
+        float w    = ((off.x==1)?f.x:1.0-f.x) * ((off.y==1)?f.y:1.0-f.y) * ((off.z==1)?f.z:1.0-f.z);
+        // plane (backface) weight — reject probes behind the surface so a wall thinner than the
+        // c0 spacing can't blend its front-lit probes onto a back-face pixel.
+        vec3  to_probe = (vec3(cell) + 0.5) * cd.spacing - world;
+        float pdist    = length(to_probe);
+        float facing   = (pdist > 1e-4) ? dot(n, to_probe / pdist) : 1.0;   // ~1 front, <0 behind
+        float vis      = facing * 0.5 + 0.5;                                // [0,1]
+        w *= step(0.0, facing) * vis;                                        // sharpen → back probes ~0
+        nidx[o] = id;
+        nw[o]   = (id == INVALID) ? 0.0 : w;
+        wsum   += nw[o];
+    }
+    if (wsum <= 0.0) return vec4(0.0);                 // no probe → hit=0
+    float inv = 1.0 / wsum;
+    vec3  E   = vec3(0.0);
+    float dw  = 4.0 * PI / float(cd.dirs);
+    for (uint d = 0u; d < cd.dirs; ++d) {
+        vec4 acc = vec4(0.0);
+        for (int o = 0; o < 8; ++o)
+            if (nw[o] > 0.0) acc += nw[o] * g_samp(nidx[o], cd.rad_off, cd.probe_off, cd.dirs, d);
+        acc *= inv;
+        vec2 e   = (vec2(float(d % cd.oct_res), float(d / cd.oct_res)) + 0.5) / float(cd.oct_res);
+        vec3 dir = g_oct_to_dir(e);
+        float cw = max(dot(n, dir), 0.0);
+        if (cw <= 0.0) continue;
+        vec3 sky = sky_color * smoothstep(-0.2, 0.3, dir.y);
+        E += (acc.rgb + acc.a * sky) * cw * dw;
+    }
+    return vec4(E, 1.0);
+}
+#endif

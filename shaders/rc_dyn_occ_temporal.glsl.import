@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://n4tym6f587ot"
+path="res://.godot/imported/rc_dyn_occ_temporal.glsl-2b231f34aca6d11a601c438703a4bda9.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_dyn_occ_temporal.glsl"
+dest_files=["res://.godot/imported/rc_dyn_occ_temporal.glsl-2b231f34aca6d11a601c438703a4bda9.res"]
+
+[params]
+

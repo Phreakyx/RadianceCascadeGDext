@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cx01jwmebcjne"
+path="res://.godot/imported/rc_irradiance_atrous.glsl-b897fe3566fcec56ef51ef25aa350ed8.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_irradiance_atrous.glsl"
+dest_files=["res://.godot/imported/rc_irradiance_atrous.glsl-b897fe3566fcec56ef51ef25aa350ed8.res"]
+
+[params]
+

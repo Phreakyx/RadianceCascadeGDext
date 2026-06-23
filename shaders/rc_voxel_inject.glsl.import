@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b41qcnow0xb8s"
+path="res://.godot/imported/rc_voxel_inject.glsl-a5ddb547859daaf3edeabfef1c2f1650.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_voxel_inject.glsl"
+dest_files=["res://.godot/imported/rc_voxel_inject.glsl-a5ddb547859daaf3edeabfef1c2f1650.res"]
+
+[params]
+

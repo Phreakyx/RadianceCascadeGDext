@@ -1,0 +1,206 @@
+// rc_trace.glslinc — TRACE BACKEND: anisotropic voxel cone trace. (textual #include)
+//
+// CONTRACT (shared by all backends):
+//     vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_end);
+//         returns .rgb = incoming radiance along dir, .a = transmittance (1 clear … 0 blocked)
+//
+// Anisotropic mips: mip 0 is the real directionless grid; mips ≥1 store radiance+occlusion
+// per axis-sign (0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z). A cone marching along `dir` samples the
+// THREE faces opposing dir (the faces it looks INTO), weighted by dir², so it reads the
+// occluded back of a wall instead of a mean that bleeds the lit front.
+//
+// EMISSION compositing: the emission mip keeps full radiance L (rgb = occupancy-normalized
+// mean) while COVERAGE decays /8 per level (a = asum/8). The trace therefore composites
+// emission front-to-back as trans·a·rgb — IDENTICAL to reflected radiance. Adding it as
+// trans·rgb (no coverage weight) is what produced the full-intensity floor-wide halo /
+// wall leak: a coarse cell the cube barely fills still glowed at full L. Coverage-weighting
+// keeps the emitter bright where it actually fills the cell (a≈1 near) and correctly faint
+// in coarse cells it only grazes — no halo, while the cone-footprint mip still anti-aliases
+// the capture (a sharp mip-0 read would point-sample the small cube → speckle).
+
+layout(set = 2, binding = 0) uniform sampler3D rc_voxel_tex;     // mip-0 real grid: rgb radiance, a occupancy
+layout(set = 2, binding = 1, std140) uniform RCTraceParams {
+    vec3  vox_origin;  float voxel_size;
+    vec3  vox_extent;  uint  max_steps;
+} rctp;
+layout(set = 2, binding = 2) uniform sampler3D rc_dyn_occ;       // dynamic occupancy (r8, mip0 only)
+layout(set = 2, binding = 9) uniform sampler3D rc_emission;      // isotropic emission: rgb radiance, a coverage
+
+// six anisotropic levels (each = mip-1..N of one axis-sign), trilinear+mip sampled
+layout(set = 2, binding = 3) uniform sampler3D rc_aniso_px;
+layout(set = 2, binding = 4) uniform sampler3D rc_aniso_nx;
+layout(set = 2, binding = 5) uniform sampler3D rc_aniso_py;
+layout(set = 2, binding = 6) uniform sampler3D rc_aniso_ny;
+layout(set = 2, binding = 7) uniform sampler3D rc_aniso_pz;
+layout(set = 2, binding = 8) uniform sampler3D rc_aniso_nz;
+// --- NEW: coarse clipmap shells (isotropic: rgb radiance+baked emission, a occupancy) ---
+layout(set = 2, binding = 10) uniform sampler3D rc_clip1;
+layout(set = 2, binding = 11) uniform sampler3D rc_clip2;
+layout(set = 2, binding = 12) uniform sampler3D rc_clip3;
+layout(set = 2, binding = 13) uniform sampler3D rc_clip4;
+
+struct LevelDesc { vec3 origin; float voxel_size; vec3 extent; float _pad; };   // std140, 32 B
+layout(set = 2, binding = 14, std140) uniform ClipParams {
+    LevelDesc lvl[5];        // [0]=level 0 (== rctp), [1..4]=coarse
+    uint num_levels;         // = _clip_levels
+    uint _p0, _p1, _p2;
+} clip;
+layout(set = 2, binding = 15) uniform sampler3D rc_sdf;   // r16f: dist to nearest occluder, level-0 voxels, window-relative toroidal
+
+vec4 sample_coarse_grid(int L, vec3 uvw) {           // if-ladder dodges non-uniform indexing
+    if (L == 1) return textureLod(rc_clip1, uvw, 0.0);
+    if (L == 2) return textureLod(rc_clip2, uvw, 0.0);
+    if (L == 3) return textureLod(rc_clip3, uvw, 0.0);
+    return textureLod(rc_clip4, uvw, 0.0);
+}
+// finest coarse level (1..num_levels-1) whose extent contains W, else -1
+int finest_coarse(vec3 W) {
+    for (uint L = 1u; L < clip.num_levels; ++L) {
+        vec3 uvw = (W - clip.lvl[L].origin) / clip.lvl[L].extent;
+        if (all(greaterThanEqual(uvw, vec3(0.0))) && all(lessThanEqual(uvw, vec3(1.0)))) return int(L);
+    }
+    return -1;
+}
+
+// Direction-weighted aniso sample at a fractional mip ≥0 (mip here is RELATIVE to the
+// aniso level-0, i.e. grid-mip 1). Picks the 3 faces opposing dir, weights by dir².
+vec4 sample_aniso(vec3 uvw, vec3 dir, float amip) {
+    vec3 w = dir * dir;
+    vec4 r = w.x * ((dir.x >= 0.0) ? textureLod(rc_aniso_px, uvw, amip) : textureLod(rc_aniso_nx, uvw, amip));
+    r     += w.y * ((dir.y >= 0.0) ? textureLod(rc_aniso_py, uvw, amip) : textureLod(rc_aniso_ny, uvw, amip));
+    r     += w.z * ((dir.z >= 0.0) ? textureLod(rc_aniso_pz, uvw, amip) : textureLod(rc_aniso_nz, uvw, amip));
+    return r;
+}
+
+// Unified scene sample: returns vec4(radiance.rgb, static_occlusion). Chooses isotropic
+// mip-0 vs anisotropic mip≥1 by the cone footprint mip.
+vec4 sample_scene(vec3 uvw, vec3 dir, float mip) {
+    if (mip <= 1.0) {
+        vec4 iso = textureLod(rc_voxel_tex, uvw, 0.0);
+        if (mip <= 0.0) return iso;
+        vec4 an = sample_aniso(uvw, dir, 0.0);
+        return mix(iso, an, mip);             // mip in (0,1]
+    }
+    return sample_aniso(uvw, dir, mip - 1.0); // aniso level = grid mip - 1
+}
+
+// One scene sample at world W. radiance.rgb, occ, plus level-0's separate (ungated) emission.
+struct Scene { vec3 rad; float occ; float cone_occ; vec3 em_rgb; float em_a; };
+const float SHARP_OCC_MAX_MIP = 3.0;
+const float COARSE_OCC_CONSERVATISM = 8.0;
+
+Scene sample_clipmap(vec3 W, vec3 dir, float diam) {
+    Scene o; o.rad = vec3(0.0); o.occ = 0.0; o.cone_occ = 0.0; o.em_rgb = vec3(0.0); o.em_a = 0.0;
+
+    vec3 gate0 = (W - rctp.vox_origin) / rctp.vox_extent;          // GATE (origin-relative)
+    bool in0   = all(greaterThanEqual(gate0, vec3(0.0))) && all(lessThanEqual(gate0, vec3(1.0)));
+    vec3 uvw0  = fract(W / rctp.vox_extent);                       // SAMPLE (toroidal, REPEAT)
+
+    if (in0) {
+        float mip  = max(0.0, log2(diam / rctp.voxel_size));
+        vec4  s    = sample_scene(uvw0, dir, mip);
+        o.rad      = s.rgb;
+        o.cone_occ = s.a;
+        // Crisp transmittance sample only in the band where it differs from the cone sample AND
+        // reads as sharp shadowing. mip<=1: omip==mip so it's identical → reuse (free). Wide cone:
+        // the footprint occlusion is correct → reuse. Both cut a full scene sample per step.
+        o.occ      = (mip > 1.0 && mip <= SHARP_OCC_MAX_MIP)
+                     ? sample_scene(uvw0, dir, 1.0).a
+                     : s.a;
+
+        if (clip.num_levels > 1u) {
+            vec3  d    = abs(gate0 - 0.5) * 2.0;                   // edge-ness from GATE
+            float edge = clamp((max(d.x, max(d.y, d.z)) - 0.88) / 0.12, 0.0, 1.0);
+            if (edge > 0.0) {
+                vec3 uvw1 = fract(W / clip.lvl[1].extent);         // coarse SAMPLE (toroidal)
+                vec4 c    = sample_coarse_grid(1, uvw1);
+                o.rad      = mix(o.rad, c.rgb, edge);
+                o.occ      = mix(o.occ, min(c.a * COARSE_OCC_CONSERVATISM, 1.0), edge);
+                o.cone_occ = mix(o.cone_occ, c.a, edge);   // radiance weight stays coverage-true
+            }
+        }
+    } else {
+        int L = finest_coarse(W);
+        if (L < 0) return o;
+        vec3 uvwL = fract(W / clip.lvl[L].extent);                // coarse SAMPLE (toroidal)
+        vec4 c    = sample_coarse_grid(L, uvwL);
+        o.rad = c.rgb;
+        o.occ = min(c.a * COARSE_OCC_CONSERVATISM, 1.0);
+        o.cone_occ = c.a;
+    }
+    return o;
+}
+
+float dyn_occ(vec3 uvw) { return textureLod(rc_dyn_occ, uvw, 0.0).r; }
+
+// Cap bounds over-skip while the amortized SDF is mid-flood (fast motion). Lower = safer/less
+// leak, higher = faster in open space. 32 voxels (8 m at base) is a sane default.
+const float SDF_MAX_SKIP_VOXELS = 96.0;
+const float SDF_CONE_CONSERVATISM = 0.2;   // 1.0 = exact (no edge error), 0 = skip by full d_world
+
+// Empty-space jump via the level-0 SDF. Returns a safe forward advance (world units) when the
+// cone is comfortably inside empty space, else 0 (caller does a normal cone step + sample).
+// Subtracting the cone radius keeps the whole cone footprint inside the empty sphere; the SDF
+// is a 3-D min-distance, so this never jumps the centre ray past the nearest occluder.
+float sdf_skip(vec3 W, float diam, bool in0) {
+    if (!in0) return 0.0;                                            // SDF covers the level-0 window only
+    float d_world = textureLod(rc_sdf, fract(W / rctp.vox_extent), 0.0).r * rctp.voxel_size;
+    float skip = min(d_world - SDF_CONE_CONSERVATISM * 0.5 * diam,
+                 SDF_MAX_SKIP_VOXELS * rctp.voxel_size);
+    return (skip > rctp.voxel_size) ? skip : 0.0;                   // only worth it past one voxel
+}
+
+vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_end) {
+    float trans = 1.0;
+    vec3  acc   = vec3(0.0);
+    float t     = rctp.voxel_size;
+
+    // current_voxel(W): voxel size of the level the point sits in → coarse far ⇒ big steps
+    #define STEP_FOR(W, diam, vs) (min(max((diam) * 0.5, (vs)), 4.0 * (vs)))
+
+    // Phase 1: [voxel_size, t_start) — transmittance + emission pre-roll
+    for (uint i = 0u; i < rctp.max_steps && t < t_start; ++i) {
+        vec3  W     = origin + dir * t;
+        float diam  = max(rctp.voxel_size, 2.0 * aperture_tan * t);
+        vec3  gate0 = (W - rctp.vox_origin) / rctp.vox_extent;     // GATE only
+        bool  in0   = all(greaterThanEqual(gate0, vec3(0.0))) && all(lessThanEqual(gate0, vec3(1.0)));
+
+        float jump = sdf_skip(W, diam, in0);
+        if (jump > 0.0) { t += jump; continue; }                    // empty: advance, no fetch/accumulate
+
+        Scene sc   = sample_clipmap(W, dir, diam);
+        float docc = in0 ? dyn_occ(gate0) : 0.0;                   // dyn occ is origin-relative
+        float occ  = clamp(sc.occ + docc - sc.occ * docc, 0.0, 1.0);
+        acc   += trans * (sc.em_a * sc.em_rgb);
+        trans *= (1.0 - occ);
+        if (trans < 0.01) return vec4(acc, trans);
+
+        float vs = in0 ? rctp.voxel_size : (finest_coarse(W) < 0 ? rctp.voxel_size : clip.lvl[finest_coarse(W)].voxel_size);
+        t += STEP_FOR(W, diam, vs);
+    }
+
+    // Phase 2: [t, t_end) — radiance + transmittance
+    t = max(t, t_start);
+    for (uint i = 0u; i < rctp.max_steps && t < t_end; ++i) {
+        vec3  W     = origin + dir * t;
+        float diam  = max(rctp.voxel_size, 2.0 * aperture_tan * t);
+        vec3  gate0 = (W - rctp.vox_origin) / rctp.vox_extent;     // GATE only
+        bool  in0   = all(greaterThanEqual(gate0, vec3(0.0))) && all(lessThanEqual(gate0, vec3(1.0)));
+
+        if (!in0 && finest_coarse(W) < 0) break;                    // outside all levels -> sky
+
+        float jump = sdf_skip(W, diam, in0);
+        if (jump > 0.0) { t += jump; continue; }                    // empty: advance, no fetch/accumulate
+
+        Scene sc   = sample_clipmap(W, dir, diam);
+        float docc = in0 ? dyn_occ(gate0) : 0.0;
+        float occ  = clamp(sc.occ + docc - sc.occ * docc, 0.0, 1.0);
+        acc   += trans * (sc.cone_occ * sc.rad + sc.em_a * sc.em_rgb);
+        trans *= (1.0 - occ);
+        if (trans < 0.01) break;
+
+        float vs = in0 ? rctp.voxel_size : clip.lvl[finest_coarse(W)].voxel_size;
+        t += STEP_FOR(W, diam, vs);
+    }
+    return vec4(acc, trans);
+}

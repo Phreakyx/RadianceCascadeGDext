@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cxjdqs3na1204"
+path="res://.godot/imported/rc_patch_trace.glsl-27c4e244bdda284781391a4595eb1952.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_patch_trace.glsl"
+dest_files=["res://.godot/imported/rc_patch_trace.glsl-27c4e244bdda284781391a4595eb1952.res"]
+
+[params]
+

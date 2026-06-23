@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://0rv558wn37ea"
+path="res://.godot/imported/rc_irradiance_upsample.glsl-7e41f04e78e669d80279788c065b21a2.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_irradiance_upsample.glsl"
+dest_files=["res://.godot/imported/rc_irradiance_upsample.glsl-7e41f04e78e669d80279788c065b21a2.res"]
+
+[params]
+

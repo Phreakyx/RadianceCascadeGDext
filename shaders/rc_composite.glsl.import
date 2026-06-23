@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://p7t7qyw7wqkx"
+path="res://.godot/imported/rc_composite.glsl-14dea4d88852368f071a0297a206abfc.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_composite.glsl"
+dest_files=["res://.godot/imported/rc_composite.glsl-14dea4d88852368f071a0297a206abfc.res"]
+
+[params]
+

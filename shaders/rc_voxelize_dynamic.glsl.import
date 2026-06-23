@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://i45thjpxqvjp"
+path="res://.godot/imported/rc_voxelize_dynamic.glsl-3fd4387032b819439f36f6a5e15e4ed2.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_voxelize_dynamic.glsl"
+dest_files=["res://.godot/imported/rc_voxelize_dynamic.glsl-3fd4387032b819439f36f6a5e15e4ed2.res"]
+
+[params]
+

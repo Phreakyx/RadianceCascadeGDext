@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dyb5vk8rwwto3"
+path="res://.godot/imported/rc3d_voxel_emission_mip.glsl-8e4ece9f88085b8a8f81d53d042ce72d.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc3d_voxel_emission_mip.glsl"
+dest_files=["res://.godot/imported/rc3d_voxel_emission_mip.glsl-8e4ece9f88085b8a8f81d53d042ce72d.res"]
+
+[params]
+

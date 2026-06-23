@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://2aircurkt35v"
+path="res://.godot/imported/rc3d_voxel_mip_aniso.glsl-606a5b87c6d981e2eb3718bf8c208e66.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc3d_voxel_mip_aniso.glsl"
+dest_files=["res://.godot/imported/rc3d_voxel_mip_aniso.glsl-606a5b87c6d981e2eb3718bf8c208e66.res"]
+
+[params]
+

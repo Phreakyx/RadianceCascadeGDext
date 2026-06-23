@@ -1,0 +1,46 @@
+// Shared light evaluation for the injectors. Computes the unoccluded outgoing
+// contribution (alb·color·ndl·atten/π) + the march direction/reach; the caller
+// applies visibility (level 0 = SDF march, clip = coarse occupancy march).
+
+struct RCLight {
+    vec3 position;  float inv_range;
+    vec3 direction; float type;          // 0 dir, 1 omni, 2 spot, 3 area
+    vec3 color;     float spot_cos_in;
+    float spot_cos_out; float _p0, _p1, _p2;
+};
+
+// --- experimental point-light GI boost (NON-PHYSICAL, tuning only) — single source of truth ---
+const float RC_PT_ENERGY = 24.0;   // flat gain on positional-light GI
+const float RC_PT_RANGE  = 3.0;    // effective-range multiplier (reach + cutoff)
+const float RC_PT_DECAY  = 1.0;    // falloff power: 2=physical 1/d², 1=gentle, 0.5=flat
+
+// false = light doesn't reach / faces away (caller should `continue`).
+bool rc_eval_light(RCLight lt, vec3 W, vec3 N, vec3 alb, float voxel_size, float R,
+                   out vec3 Ldir, out vec3 radiance, out float reach_vox)
+{
+    float atten;
+    if (lt.type < 0.5) {                                   // directional
+        Ldir = normalize(-lt.direction);
+        atten = 1.0; reach_vox = R;
+    } else {                                               // omni / spot / area
+        vec3  toL = lt.position - W;
+        float d   = length(toL);
+        float rr  = d * lt.inv_range / RC_PT_RANGE;
+        if (rr >= 1.0) return false;
+        Ldir  = toL / max(d, 1e-4);
+        atten = pow(max(d, 1.0), -RC_PT_DECAY)
+              * pow(clamp(1.0 - rr*rr*rr*rr, 0.0, 1.0), 2.0)
+              * RC_PT_ENERGY;
+        if (lt.type > 1.5 && lt.type < 2.5) {              // spot cone
+            float cd = dot(normalize(lt.direction), -Ldir);
+            atten *= smoothstep(lt.spot_cos_out, lt.spot_cos_in, cd);
+        } else if (lt.type > 2.5) {                        // area: front face only
+            atten *= max(dot(normalize(lt.direction), -Ldir), 0.0);
+        }
+        reach_vox = min(d / voxel_size, R);
+    }
+    float ndl = max(dot(N, Ldir), 0.0);
+    if (ndl <= 0.0 || atten <= 0.0) return false;
+    radiance = alb * lt.color * (ndl * atten) * 0.31830988618;
+    return true;
+}

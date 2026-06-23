@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dpvrrd3mys16g"
+path="res://.godot/imported/rc_voxel_debug.glsl-e44cffc9323ea2082052864b7ca31f86.res"
+
+[deps]
+
+source_file="res://addons/radiance_cascade/shaders/rc_voxel_debug.glsl"
+dest_files=["res://.godot/imported/rc_voxel_debug.glsl-e44cffc9323ea2082052864b7ca31f86.res"]
+
+[params]
+
