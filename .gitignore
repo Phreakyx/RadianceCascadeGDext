@@ -6,3 +6,4 @@ RadianceCascade.vcxproj.user
 *.obj
 *.pdb
 .sconsign.dblite
+*.import

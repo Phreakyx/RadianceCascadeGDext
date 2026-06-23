@@ -18,7 +18,7 @@ func _ready() -> void:
 	_ensure_rc.call_deferred()
 
 func _on_node_added(n: Node) -> void:
-	if n is WorldEnvironment or n is Camera3D or n is RCCompositorEffect:
+	if n is WorldEnvironment or n is Camera3D:
 		_ensure_rc.call_deferred()
 
 func _ensure_rc() -> void:
@@ -41,10 +41,10 @@ func _ensure_rc() -> void:
 		return
 
 	# Spawn the node once if the scene doesn't already provide one.
-	var rc := get_tree().get_first_node_in_group("radiance_cascade") as CRadianceCascade
+	var rc := scene.find_child("CRadianceCascade") as CRadianceCascade
 	if rc == null:
 		rc = CRadianceCascade.new()
-		rc.name = "RadianceCascade"
+		rc.name = "CRadianceCascade"
 		scene.add_child(rc)
 
 	# Wire every RC effect to the node.
