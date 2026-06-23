@@ -534,9 +534,11 @@ namespace godot
         bool             _initialized = false;
         bool             _needs_reinit = false;   // set on resolution/resolution-config change
         bool             _gpu_profile = false;   // flip true for a capture session
+        bool             _camera_is_set = false;
 
         // ── Camera ──
         RID         _camera_ubo;             // RCCameraData (inverse + forward view/proj)
+        Camera3D*   _current_active_camera = nullptr;;
         Projection  _pending_proj;
         Transform3D _pending_view;
         bool        _camera_dirty = false;
