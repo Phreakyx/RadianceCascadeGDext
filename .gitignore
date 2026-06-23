@@ -7,3 +7,4 @@ RadianceCascade.vcxproj.user
 *.pdb
 .sconsign.dblite
 *.import
+compile_commands.json

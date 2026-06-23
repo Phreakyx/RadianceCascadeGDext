@@ -14,45 +14,35 @@ addons/radiance_cascade/
   shaders/                       # all rc_*.glsl / rc3d_*.glsl + rc_*.glslinc
   src/                           # CRadianceCascade.{h,cpp}, compat.h, register_types.{h,cpp}
   SConstruct                     # standalone build (uses godot-cpp submodule below)
+  RadianceCascade.sln			 # Visual Studio solution
   bin/                           # build output (referenced by the .gdextension)
   godot-cpp/                     # add as a git submodule (NOT committed here)
 ```
 
 ## Build (you must do this — it wasn't compiled here)
 
-1. Add godot-cpp as a submodule inside this folder and check out the branch that
-   matches your Godot version:
+   Open the project in Visual Studio and build Release and Debug or:
    ```
-   git submodule add https://github.com/godotengine/godot-cpp addons/radiance_cascade/godot-cpp
-   cd addons/radiance_cascade/godot-cpp && git checkout 4.x   # match your engine
-   ```
-   (Optionally drop a `.gdignore` in `godot-cpp/` so the editor doesn't scan it.)
-2. From `addons/radiance_cascade/`, build:
-   ```
-   scons platform=windows target=template_debug      # and target=template_release
+   scons platform=windows target=template_debug
+   scons platform=windows target=template_release
    ```
    Output lands in `bin/` with the names the `.gdextension` expects.
 
 ## First run in the editor
 
-- The shaders were moved, so their old `.import` files were dropped. Reopen the
-  project (or run `--import`) once so Godot re-imports them at the new path.
 - Enable the plugin in **Project Settings → Plugins** (registers the
   `RadianceCascadeManager` autoload).
 - The C++ loads shaders from `res://addons/radiance_cascade/shaders/...`.
 
 ## Usage
 
-- Add a `CRadianceCascade` node to your scene (it joins the `radiance_cascade` group).
+- Add a `CRadianceCascade` node to your scene.
 - Add an `RCCompositorEffect` to your `WorldEnvironment`'s compositor. It finds the
   RC node automatically (the manager also wires it explicitly).
 - The RC node drives its own dynamic occluders + voxel-region recenter
-  (`_physics_process`). Game-specific setup (sky color, ambient, hotkeys) stays in
-  your own scene script — see `main.gd` for an example.
+  (`_physics_process`)
 
 ## Notes
 
-- This extension registers only `CRadianceCascade`; the game's other native
-  classes remain in `PeerlessCPP`.
-- `compat.h` here is the game's include set minus the GeometricTools/boost headers
-  that only the movement classes needed.
+- I used an example project https://github.com/mikatomik/Godot-4-Overgrown-Subway-Demo
+  from mikatomik simply for showcasing the plugin working and being set up.
