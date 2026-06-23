@@ -101,7 +101,7 @@ namespace godot
     };
 
     // rc_patch_merge.glsl — merge cascade c+1 down into cascade c.
-    struct alignas(16) RCPatchMergePC { uint32_t cascade, _p0, _p1, _p2; };
+    struct alignas(16) RCPatchMergePC { uint32_t cascade, frame, amortize_n, _p2; };
 
     // rc3d_voxel_mip_aniso.glsl — build 6-axis directional radiance mips.
     struct alignas(16) RCMipAnisoPC { uint32_t dst_res; uint32_t src_is_aniso; uint32_t _p1, _p2; };

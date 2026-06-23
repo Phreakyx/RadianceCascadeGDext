@@ -1622,11 +1622,11 @@ void CRadianceCascade::_dispatch_patch_trace()
         _rd->compute_list_bind_compute_pipeline(l, _patch_trace_pipeline);
         _rd->compute_list_bind_uniform_set(l, _patch_trace_set0, 0);
         _rd->compute_list_bind_uniform_set(l, _trace_voxel_set2, 2);
-        const uint32_t amort_frame = _frame_index++;   // advance the direction-amortization rotation once per frame
+        _frame_index++;   // advance the amortization rotation once per frame; read by BOTH trace and merge so they gate the SAME directions
         for (uint32_t c = 0; c < RC_CASCADES; ++c)
         {
             RCPatchTracePC pc{}; pc.cascade = c; pc.local_trans = _local_transmittance ? 1u : 0u;
-            pc.frame = amort_frame; pc.amortize_n = _trace_amortization;
+            pc.frame = _frame_index; pc.amortize_n = _trace_amortization;
             PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
             _rd->compute_list_set_push_constant(l, b, b.size());
             _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, c * 12);  // 3 uints/cascade
@@ -1659,6 +1659,7 @@ void CRadianceCascade::_dispatch_patch_merge()
         }
 
         RCPatchMergePC pc{}; pc.cascade = (uint32_t) c;
+        pc.frame = _frame_index; pc.amortize_n = _trace_amortization;   // SAME rotation as trace this frame → merge the dirs trace refreshed
         PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
         int64_t l = _rd->compute_list_begin();
         _rd->compute_list_bind_compute_pipeline(l, _patch_merge_pipeline);

@@ -31,7 +31,7 @@ struct CascadeDesc {
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 layout(set = 0, binding = 8, std430) readonly buffer Reduced { uvec2 reduced_in[]; };
 
-layout(push_constant) uniform PC { uint cascade; uint _p0, _p1, _p2; } pc;
+layout(push_constant) uniform PC { uint cascade; uint frame; uint amortize_n; uint _p2; } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
 
@@ -63,7 +63,9 @@ void main() {
 
     uint i = gl_GlobalInvocationID.x;                        // i-th LIVE probe (compact)
     if (i >= alloc_count[c]) return;                         // past live list (dispatch rounding)
-    uint slot_local = live_list[cd.probe_off + i] & 0x7fffffffu;   // compact → actual slot (mask add's bit-31 bootstrap flag)
+    uint entry      = live_list[cd.probe_off + i];
+    uint slot_local = entry & 0x7fffffffu;                   // compact → actual slot
+    bool bootstrap  = (entry & 0x80000000u) != 0u;           // owner changed → trace refreshed ALL dirs this frame
     uint idx        = cd.probe_off + slot_local;
     vec3 W   = probe_world[idx].xyz;
 
@@ -88,6 +90,12 @@ void main() {
     float rinv = 1.0 / float(r * r);                    // average over r² sub-directions
 
     for (uint dc = 0u; dc < cd.dirs; ++dc) {
+        // Amortize merge in LOCKSTEP with trace (rc_patch_trace): only re-merge directions whose raw
+        // interval was (re)traced this frame; skipped dirs keep last frame's MERGED value untouched.
+        // probe_radiance is read AND written in place, so re-merging a kept (already-merged) direction
+        // would re-add the far-field continuation every frame → emissive compounds and flickers. Bootstrap
+        // probes had ALL dirs traced this frame, so they merge all. Must use the SAME frame/N as trace.
+        if (!bootstrap && pc.amortize_n > 1u && (dc % pc.amortize_n) != (pc.frame % pc.amortize_n)) continue;
         vec4 cont = vec4(0.0);                          // missing coarse neighbour -> no continuation
         if (inv_wsum > 0.0) {
             cont = vec4(0.0);
