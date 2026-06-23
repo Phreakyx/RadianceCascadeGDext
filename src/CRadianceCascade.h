@@ -68,7 +68,7 @@ namespace godot
     // rc_voxel_debug.glsl — raymarch a grid level to the screen for visualization.
     struct alignas(16) RCVoxelDebugPC { uint32_t sw, sh, res, max_steps; float vox_origin[3]; float voxel_size; float vox_extent[3]; float occ_threshold; };
 
-    // rc3d_voxel_mip / rc3d_voxel_emission_mip — downsample one mip level.
+    // rc3d_voxel_emission_mip — downsample one emission mip level.
     struct alignas(16) RCVoxelMipPC { uint32_t dst_res, _p2, _p0, _p1; };
 
     // rc_patch_clear.glsl — reset probe buckets + per-cascade alloc counters.
@@ -608,12 +608,11 @@ namespace godot
         // Bounds the GPU per-thread AABB loop; used for ALL levels.
         float    _recenter_margin_frac = 0.125f;       // recenter when camera > frac*extent from centre
 
-        // ── Voxel mips (isotropic + anisotropic + emission) ──
+        // ── Voxel mips (anisotropic + emission) ──
         // Cone tracing samples the 6-axis anisotropic mips (direction-dependent)
         // to limit light leaking; emission mips carry emissive bounce up the chain.
-        RID _voxel_mip_shader, _voxel_mip_pipeline;
-        Vector<RID> _voxel_mip_views;   // write-views, one per mip level ≥ 1
-        Vector<RID> _voxel_mip_sets;
+        // (The old isotropic mean-mip pass — rc3d_voxel_mip — was removed; the aniso mip
+        //  replaced it and the trace only ever reads grid mip 0 + the aniso/emission chains.)
         int _vox_mip_levels = 1;
         RID _voxel_aniso[6];                      // rgba16f, res/2³, mips 0..N-1  (= grid mips 1..N)
         std::vector<RID> _aniso_views[6];         // per-level views, one array per direction

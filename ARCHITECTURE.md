@@ -119,9 +119,6 @@ SSBO at `b7`; the camera UBO at `b5`.
 - **`rc3d_voxel_emission_mip.glsl`** — isotropic, occupancy-weighted emission mip
   (emission doesn't self-occlude, so no front-to-back gating). Lets an emissive cube
   broadcast its glow through coarse levels.
-- **`rc3d_voxel_mip.glsl`** — ⚠️ **vestigial**. The isotropic grid-mip kernel is
-  compiled and its sets allocated, but it is **never dispatched** (the trace reads the
-  grid only at mip 0; mips ≥1 come from the aniso pass). Safe-to-remove cleanup.
 
 ### Probe pipeline (the Radiance Cascades core)
 
@@ -208,9 +205,6 @@ SSBO at `b7`; the camera UBO at `b5`.
    `dispatch` touches the scene tree during that first call.
 
 9. **Diffuse irradiance only.** No glossy/specular GI, no reflections.
-
-10. **Vestigial code.** `rc3d_voxel_mip.glsl` + `_voxel_mip_pipeline`/`_voxel_mip_sets`
-    are allocated but never dispatched (see §3) — dead weight to prune.
 
 ---
 

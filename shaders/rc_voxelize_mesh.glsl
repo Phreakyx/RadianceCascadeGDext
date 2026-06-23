@@ -91,14 +91,24 @@ void main() {
     ivec3 wmin = max(ivec3(floor(tmin / vsize)), slo);
     ivec3 wmax = min(ivec3(floor(tmax / vsize)), shi);
 
-    int R = int(pc.res);
+    int  R        = int(pc.res);
+    bool emissive = any(greaterThan(t.emission.rgb, vec3(0.0)));
     for (int z = wmin.z; z <= wmax.z; ++z)
     for (int y = wmin.y; y <= wmax.y; ++y)
     for (int x = wmin.x; x <= wmax.x; ++x) {
         vec3 bc = (vec3(x, y, z) + 0.5) * vsize;                 // absolute world centre
         if (tri_box_overlap(bc, bh, a, b, c)) {
             ivec3 cell = ((ivec3(x, y, z) % R) + R) % R;          // toroidal
-            imageStore(emission_out, cell, vec4(t.emission.rgb, 1.0));
+            // EMISSION: only emissive triangles touch the emission grid, so a non-emissive
+            // triangle sharing this voxel can NEVER race an emitter to black — this guard is
+            // what makes the no-drop robust (a plain max(cur,0) could still lose to a stale
+            // read). Among co-voxel emitters we keep the per-channel brightest via read-max.
+            // (occ is constant 1 → order-independent; albedo/normal stay last-write-wins, whose
+            // arbitrary winner is only cosmetic for diffuse GI.)
+            if (emissive) {
+                vec3 cur = imageLoad(emission_out, cell).rgb;
+                imageStore(emission_out, cell, vec4(max(cur, t.emission.rgb), 1.0));
+            }
             imageStore(voxel_out,    cell, vec4(0.0, 0.0, 0.0, 1.0));
             imageStore(albedo_out,   cell, vec4(t.albedo.rgb,    1.0));
             imageStore(normal_out,   cell, vec4(fn * 0.5 + 0.5,  1.0));

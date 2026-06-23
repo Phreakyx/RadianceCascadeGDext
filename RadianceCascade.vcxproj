@@ -85,7 +85,6 @@
     <None Include="RCCompositorEffect.gd" />
     <None Include="README.md" />
     <None Include="shaders\rc3d_voxel_emission_mip.glsl" />
-    <None Include="shaders\rc3d_voxel_mip.glsl" />
     <None Include="shaders\rc3d_voxel_mip_aniso.glsl" />
     <None Include="shaders\rc3d_voxel_sdf.glsl" />
     <None Include="shaders\rc_clip_inject.glsl" />

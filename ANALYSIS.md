@@ -95,8 +95,7 @@ Invisible for diffuse; would matter for anything sharper.
   bounce make it "plausible," not radiometric.
 - **First-frame synchronous bake + render-thread scene access** in `dispatch()`'s init
   path → a load-time hitch and a threading smell.
-- **Fixed probe caps** with silent cell drops when a hash chain fills (`MAX_LINEAR`),
-  and the vestigial isotropic grid-mip path (`rc3d_voxel_mip.glsl`, never dispatched).
+- **Fixed probe caps** with silent cell drops when a hash chain fills (`MAX_LINEAR`).
 
 ---
 

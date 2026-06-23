@@ -301,28 +301,8 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         }
     }
 
-    // after _voxel_tex is created:
+    // after _voxel_tex is created: mip-level count drives the aniso + emission mip chains.
     _vox_mip_levels = 1 + (int) Math::floor((Math::log((double) _vox_res) / Math::log((double) 2.0)));
-    _voxel_mip_views.clear();
-    for (int L = 0; L < _vox_mip_levels; ++L)
-    {                 // ← was L = 1
-        Ref<RDTextureView> tv; tv.instantiate();
-        RID view = _rd->texture_create_shared_from_slice(tv, _voxel_tex, 0, L, 1,
-            RenderingDevice::TEXTURE_SLICE_3D);
-        ERR_FAIL_COND_MSG(!view.is_valid(), vformat("RC: voxel mip view %d failed", L));
-        _voxel_mip_views.push_back(view);
-    }
-
-    // mip shader + pipeline
-    {
-        Ref<RDShaderFile> f = ResourceLoader::get_singleton()->load("res://addons/radiance_cascade/shaders/rc3d_voxel_mip.glsl", "RDShaderFile");
-        ERR_FAIL_COND_MSG(f.is_null(), "RC: rc3d_voxel_mip.glsl not found");
-        Ref<RDShaderSPIRV> spirv = f->get_spirv();
-        String err = spirv->get_stage_compile_error(RenderingDevice::SHADER_STAGE_COMPUTE);
-        ERR_FAIL_COND_MSG(err != "", vformat("RC mip shader error: %s", err));
-        _voxel_mip_shader = _rd->shader_create_from_spirv(spirv);
-        _voxel_mip_pipeline = _rd->compute_pipeline_create(_voxel_mip_shader);
-    }
 
     {   // anisotropic mips — six directional radiance mip stacks (±X,±Y,±Z).
         // Cone tracing samples the stack facing the cone, so occlusion is
@@ -776,19 +756,6 @@ void CRadianceCascade::_build_static_sets()
         ERR_FAIL_COND_MSG(!_composite_set0.is_valid(), "RC: composite set0 failed");
     }
 
-    for (int L = 1; L < _vox_mip_levels; ++L)
-    {
-        TypedArray<RDUniform> u;
-        Ref<RDUniform> u0; u0.instantiate();
-        u0->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
-        u0->set_binding(0); u0->add_id(_voxel_sampler); u0->add_id(_voxel_mip_views[L - 1]); u.append(u0);  // ← slice, not _voxel_tex
-        Ref<RDUniform> u1; u1.instantiate();
-        u1->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
-        u1->set_binding(1); u1->add_id(_voxel_mip_views[L]); u.append(u1);
-        RID set = _rd->uniform_set_create(u, _voxel_mip_shader, 0);
-        ERR_FAIL_COND_MSG(!set.is_valid(), vformat("RC: mip set %d failed", L));
-        _voxel_mip_sets.push_back(set);
-    }
 
     //PATCH
     auto ssbo = [] (int bind, RID id)
@@ -1296,8 +1263,6 @@ void CRadianceCascade::_free_rids()
     safe_free(_debug_tex);
     safe_free(_camera_ubo);
     safe_free(_irradiance_tex);
-    for (int i = 0; i < (int) _voxel_mip_sets.size(); ++i) if (_voxel_mip_sets[i].is_valid())  _rd->free_rid(_voxel_mip_sets[i]);
-    for (int i = 0; i < (int) _voxel_mip_views.size(); ++i) if (_voxel_mip_views[i].is_valid()) _rd->free_rid(_voxel_mip_views[i]);
     for (int dir = 0; dir < 6; ++dir)
     {
         for (int i = 0; i < (int) _aniso_views[dir].size(); ++i)
@@ -1311,9 +1276,6 @@ void CRadianceCascade::_free_rids()
     _emis_mip_views.clear();
     safe_free(_emis_mip_pipeline); safe_free(_emis_mip_shader);
     safe_free(_voxel_emission);
-    _voxel_mip_sets.clear();
-    _voxel_mip_views.clear();
-    safe_free(_voxel_mip_pipeline); safe_free(_voxel_mip_shader);
     safe_free(_irradiance_half);
     safe_free(_upsample_shader); safe_free(_upsample_pipeline);
     safe_free(_upsample_set0);
@@ -1750,7 +1712,7 @@ void CRadianceCascade::_dispatch_voxel_mips()
             Ref<RDUniform> us; us.instantiate();
             us->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
             us->set_binding(6); us->add_id(_voxel_sampler);
-            us->add_id(L == 0 ? _voxel_mip_views[0] : _voxel_mip_views[0]); // L==0 uses real mip0; deeper unused
+            us->add_id(_voxel_tex);   // real grid; texelFetch LOD 0 = mip 0. Only read when src_is_aniso==0 (L==0)
             u.append(us);
         }
         // src aniso 7..12 = previous aniso level (L-1); for L==0 bind level 0 as placeholder (unused)

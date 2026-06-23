@@ -45,7 +45,6 @@
     <None Include="RCCompositorEffect.gd"><Filter>Build &amp; Plugin</Filter></None>
     <None Include="README.md"><Filter>Build &amp; Plugin</Filter></None>
     <None Include="shaders\rc3d_voxel_emission_mip.glsl"><Filter>Shaders</Filter></None>
-    <None Include="shaders\rc3d_voxel_mip.glsl"><Filter>Shaders</Filter></None>
     <None Include="shaders\rc3d_voxel_mip_aniso.glsl"><Filter>Shaders</Filter></None>
     <None Include="shaders\rc3d_voxel_sdf.glsl"><Filter>Shaders</Filter></None>
     <None Include="shaders\rc_clip_inject.glsl"><Filter>Shaders</Filter></None>
