@@ -8,3 +8,4 @@ RadianceCascade.vcxproj.user
 .sconsign.dblite
 *.import
 compile_commands.json
+ENGINE_ROADMAP.md

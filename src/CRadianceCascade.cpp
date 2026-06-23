@@ -39,6 +39,11 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "scale_mult", PROPERTY_HINT_RANGE, "1.05,2.5,0.01"),
         "set_scale_mult", "get_scale_mult");
 
+    ClassDB::bind_method(D_METHOD("set_interval_overlap", "v"), &CRadianceCascade::set_interval_overlap);
+    ClassDB::bind_method(D_METHOD("get_interval_overlap"), &CRadianceCascade::get_interval_overlap);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "interval_overlap", PROPERTY_HINT_RANGE, "0.0,0.5,0.01"),
+        "set_interval_overlap", "get_interval_overlap");
+
     ClassDB::bind_method(D_METHOD("set_probe_seed_max_h", "v"), &CRadianceCascade::set_probe_seed_max_h);
     ClassDB::bind_method(D_METHOD("get_probe_seed_max_h"), &CRadianceCascade::get_probe_seed_max_h);
     ADD_PROPERTY(PropertyInfo(Variant::INT, "probe_seed_max_h", PROPERTY_HINT_RANGE, "360,2160,1"),
@@ -1487,9 +1492,11 @@ void CRadianceCascade::_build_cascade_table()
         cd.dirs = oct[c] * oct[c];
         cd.aperture = 2.0f / float(oct[c]);
 
+        float len = ray0 * kc * interval_factor * _step_mult;   // nominal interval length (was ray0 * (1u<<c) * ...)
         cd.t_start = t;
-        cd.t_end = t + ray0 * kc * interval_factor * _step_mult;   // was ray0 * (1u<<c) * ...
-        t = cd.t_end;
+        cd.t_end = t + len * (1.0f + _interval_overlap);   // near cone overruns the seam by `overlap` so it,
+                                                           // not the offset coarse probes, owns occlusion there
+        t += len;                                          // next cascade still starts at the un-extended seam
 
         cd.probe_cap = pcap[c];          // soft live-count cap (stats only; not a storage bound)
         cd.bucket_cap = pcap[c] * 2u;     // real slot count → load factor 0.5

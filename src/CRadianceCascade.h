@@ -287,6 +287,13 @@ namespace godot
         }
         float get_scale_mult() const { return _cascade_scale; }
 
+        void set_interval_overlap(float v)
+        {
+            _interval_overlap = CLAMP(v, 0.0f, 0.5f);   // >0.5 would double-count more than half the band
+            _cascade_dirty = true;                      // rebuilt at top of dispatch(), same as dist/step
+        }
+        float get_interval_overlap() const { return _interval_overlap; }
+
         void set_probe_seed_max_h(int v) { _probe_seed_max_h = MAX(v, 64); }   // coarse-cascade seed lattice height
         int  get_probe_seed_max_h() const { return _probe_seed_max_h; }
 
@@ -553,6 +560,9 @@ namespace godot
         float       _step_mult = 1.0f;            // Sannikov "Step mult": global cascade interval/reach scale
         float       _cascade_scale = 2.0f;        // per-cascade geometric ratio for spacing AND interval.
         // 2.0 = canonical (current). <2 = gentler ramp (Sannikov).
+        float       _interval_overlap = 0.10f;    // fraction each cascade's near cone overruns its seam,
+        // so the origin-true near cone (not the offset coarse probes) owns occlusion across the interval
+        // cut. Cheap partial bilinear-fix; stacks with the cone footprint. 0 = exact tiling (old behavior).
         bool        _cascade_dirty = false;       // set by the mult setters, consumed at top of dispatch()
         int         _probe_seed_max_h = 1080;
 
