@@ -34,8 +34,10 @@ layout(set = 1, binding = 1) uniform sampler2D normal_input;   // unused, layout
 layout(push_constant) uniform PC {
     uint  screen_width, screen_height, debug_kind, cascade;
     float z_near, z_far, _p0, _p1;
+    vec3  sky_color; float _p2;          // matches the gather's sky fallback
 } pc;
 
+const float PI = 3.14159265359;
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
 
 float linearize_depth(float raw) { return (raw < 0.00001) ? pc.z_far : pc.z_near / raw; }
@@ -63,15 +65,21 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
 }
 vec3 id_color(uint i) { return fract(vec3(float(i)*0.61803, float(i)*0.0072, float(i)*0.0331)) * 0.8 + 0.2; }
 
-// Mean traced radiance over a probe's directions (rgb only; .a is per-dir transmittance).
-vec3 probe_mean_radiance(uint local, uint rad_off, uint dirs) {
-    vec3 acc = vec3(0.0);
-    for (uint d = 0u; d < dirs; ++d) {
-        uvec2 p = probe_radiance[rad_off + local * dirs + d];
-        vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-        acc += vec3(rg, ba.x);
-    }
-    return acc / float(dirs);
+// The pieces below mirror the gather (rc_patch_gather) EXACTLY so kind 1 previews the real output.
+vec3 oct_to_dir(vec2 e) {
+    e = e * 2.0 - 1.0;
+    vec3 v = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * sign(v.xy);
+    return normalize(v);
+}
+vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // rgb radiance + a transmittance
+    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
+    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
+    return vec4(rg, ba.x, ba.y);
+}
+vec3 fetch_normal_ws(vec2 uv) {
+    vec3 nv = normalize(texture(normal_input, uv).xyz * 2.0 - 1.0);
+    return normalize(mat3(cam.inv_view) * nv);                              // view-space normal → world
 }
 
 void main() {
@@ -93,20 +101,44 @@ void main() {
         return;
     }
 
-    // kind 1 — radiance. 8-probe trilinear blend, identical to the gather's spatial filter.
+    // kind 1 — GATHER PREVIEW. Runs the gather's EXACT reconstruction (8-probe trilinear with the
+    // plane/backface weight, then cosine-integrate the directions + sky through residual transparency)
+    // on the SELECTED cascade. At cascade 0 this equals the live GI; coarser cascades show that
+    // cascade's folded contribution. This is what the frame will actually produce — use kind 0 for the
+    // raw single-nearest probe view instead. Mirrors rc_patch_gather so the two can't silently diverge.
+    vec3  n  = fetch_normal_ws(uv);
     vec3  sp = world / cd.spacing - 0.5;     // probe centres at (cell+0.5)*spacing
     ivec3 b  = ivec3(floor(sp));
     vec3  f  = sp - vec3(b);
-    vec3  acc  = vec3(0.0);
-    float wsum = 0.0;
+    uint  nidx[8]; float nw[8]; float wsum = 0.0;
     for (int o = 0; o < 8; ++o) {
-        ivec3 off = ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
-        uint  nid = find_in_region(ivec4(b + off, int(pc.cascade)), cd.bucket_off, cd.bucket_cap);
-        if (nid == INVALID) continue;        // partial neighbourhood → re-normalise by wsum
-        float w = ((off.x==1)?f.x:1.0-f.x) * ((off.y==1)?f.y:1.0-f.y) * ((off.z==1)?f.z:1.0-f.z);
-        acc  += w * probe_mean_radiance(nid - cd.probe_off, cd.rad_off, cd.dirs);
-        wsum += w;
+        ivec3 off  = ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
+        ivec3 cell = b + off;
+        uint  id   = find_in_region(ivec4(cell, int(pc.cascade)), cd.bucket_off, cd.bucket_cap);
+        float w    = ((off.x==1)?f.x:1.0-f.x) * ((off.y==1)?f.y:1.0-f.y) * ((off.z==1)?f.z:1.0-f.z);
+        vec3  to_probe = (vec3(cell) + 0.5) * cd.spacing - world;          // plane (backface) weight
+        float pdist    = length(to_probe);
+        float facing   = (pdist > 1e-4) ? dot(n, to_probe / pdist) : 1.0;
+        w *= step(0.0, facing) * (facing * 0.5 + 0.5);
+        nidx[o] = id;
+        nw[o]   = (id == INVALID) ? 0.0 : w;
+        wsum   += nw[o];
     }
-    if (wsum <= 0.0) { imageStore(debug_out, px, vec4(1.0, 0.0, 0.0, 1.0)); return; }   // all 8 missed → red
-    imageStore(debug_out, px, vec4(acc / wsum, 1.0));
+    if (wsum <= 0.0) { imageStore(debug_out, px, vec4(1.0, 0.0, 0.0, 1.0)); return; }   // no usable probe → red
+    float inv = 1.0 / wsum;
+    vec3  E   = vec3(0.0);
+    float dw  = 4.0 * PI / float(cd.dirs);
+    for (uint d = 0u; d < cd.dirs; ++d) {
+        vec4 acc = vec4(0.0);
+        for (int o = 0; o < 8; ++o)
+            if (nw[o] > 0.0) acc += nw[o] * samp(nidx[o], cd.rad_off, cd.probe_off, cd.dirs, d);
+        acc *= inv;
+        vec2 e   = (vec2(float(d % cd.oct_res), float(d / cd.oct_res)) + 0.5) / float(cd.oct_res);
+        vec3 dir = oct_to_dir(e);
+        float cw = max(dot(n, dir), 0.0);
+        if (cw <= 0.0) continue;
+        vec3 sky = pc.sky_color * smoothstep(-0.2, 0.3, dir.y);
+        E += (acc.rgb + acc.a * sky) * cw * dw;
+    }
+    imageStore(debug_out, px, vec4(max(E, vec3(0.0)), 1.0));
 }

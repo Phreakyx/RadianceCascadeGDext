@@ -89,6 +89,7 @@ namespace godot
     {
         uint32_t screen_width, screen_height, debug_kind, cascade;
         float    z_near, z_far, _p0, _p1;
+        float    sky_color[3]; float _p2;   // kind 1 (gather preview) sky fallback; matches the gather
     };
 
     // rc_patch_gather.glsl — sample cascade-0 probes into the half-res irradiance buffer.

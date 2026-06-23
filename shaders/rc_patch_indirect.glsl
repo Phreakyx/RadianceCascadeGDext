@@ -2,10 +2,11 @@
 #version 450
 
 // Sparse-RC (cascaded, NON-SHARED) — build indirect dispatch args. One thread per cascade.
-// Slot-keyed probes: trace/merge iterate the WHOLE hash region (bucket_cap) and skip empties,
-// so dispatch size is the fixed slot count, not the (nondeterministic) live count.
-//   block 0 (cascades 0..N-1): TRACE  groups = ceil(bucket_cap * dirs / local_size)
-//   block 1 (cascades 0..N-1): MERGE  groups = ceil(bucket_cap        / local_size)
+// TRACE iterates the COMPACT live list (live_list[0..alloc_count); see rc_patch_trace), so its
+// dispatch is sized to the live probe count. MERGE iterates the WHOLE hash region (bucket_cap)
+// and skips empties, so it's sized to the fixed slot count.
+//   block 0 (cascades 0..N-1): TRACE  groups = ceil(alloc_count[c] * dirs / local_size)
+//   block 1 (cascades 0..N-1): MERGE  groups = ceil(bucket_cap          / local_size)
 
 layout(local_size_x = 16) in;
 

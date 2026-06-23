@@ -925,6 +925,8 @@ void CRadianceCascade::_build_static_sets()
         d->set_binding(1); d->add_id(_debug_tex); u.append(d);
         Ref<RDUniform> c; c.instantiate(); c->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
         c->set_binding(2); c->add_id(_camera_ubo); u.append(c);
+        Ref<RDUniform> e; e.instantiate(); e->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+        e->set_binding(3); e->add_id(_voxel_linear_sampler); e->add_id(_voxel_emission); u.append(e);   // L0: real emission grid
         _voxel_debug_set0 = _rd->uniform_set_create(u, _voxel_debug_shader, 0);
     }
 
@@ -938,6 +940,8 @@ void CRadianceCascade::_build_static_sets()
         d->set_binding(1); d->add_id(_debug_tex); u.append(d);
         Ref<RDUniform> c; c.instantiate(); c->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
         c->set_binding(2); c->add_id(_camera_ubo); u.append(c);
+        Ref<RDUniform> e; e.instantiate(); e->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+        e->set_binding(3); e->add_id(_voxel_linear_sampler); e->add_id(_clip_grid[L]); u.append(e);   // clip L: grid carries baked emission in rgb
         _voxel_debug_clip_set[L] = _rd->uniform_set_create(u, _voxel_debug_shader, 0);
     }
 
@@ -1712,6 +1716,7 @@ void CRadianceCascade::_dispatch_patch_lookup(uint32_t kind)
     pc.screen_width = _screen_size.x; pc.screen_height = _screen_size.y;
     pc.debug_kind = kind; pc.cascade = MIN(_debug_cascade, RC_CASCADES - 1u);
     pc.z_near = _z_near; pc.z_far = _z_far;
+    pc.sky_color[0] = _sky_color.x; pc.sky_color[1] = _sky_color.y; pc.sky_color[2] = _sky_color.z;
     PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
     int64_t l = _rd->compute_list_begin();
     _rd->compute_list_bind_compute_pipeline(l, _patch_lookup_pipeline);

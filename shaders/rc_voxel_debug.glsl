@@ -3,8 +3,11 @@
 
 // DEBUG_VOXEL — march a primary ray per pixel through the voxel grid and shade the
 // first solid voxel by a gradient-estimated normal (so the voxelized scene reads as
-// solid relief), adding emission for emissive voxels. Lets us verify the mesh
-// voxelizer captured the geometry, at the right scale, with correct occupancy.
+// solid relief), adding captured emission from the dedicated EMISSION grid. Lets us
+// verify the mesh voxelizer captured the geometry, scale, occupancy AND emission.
+// (Emission must come from emission_tex, NOT voxel_tex.rgb — the mesh voxelizer writes
+//  rgb=0 to voxel_tex and routes emission to its own texture; at level 0 voxel_tex.rgb
+//  is the lit-radiance grid, which is 0 pre-inject and would hide emitters here.)
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -14,6 +17,9 @@ layout(set = 0, binding = 2, std140) uniform CameraData {
     mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view;
     vec2 jitter; vec2 _pad;
 } cam;
+// L0: the dedicated emission grid (rgb). Clip levels: the level's own grid (rgb = baked
+// radiance+emission), since coarse levels store emission folded into the grid colour.
+layout(set = 0, binding = 3) uniform sampler3D emission_tex;
 
 layout(push_constant) uniform PC {
     uint  screen_width, screen_height, res, max_steps;
@@ -49,8 +55,7 @@ void main() {
                 occ_at(p + vec3(0,h,0)) - occ_at(p - vec3(0,h,0)),
                 occ_at(p + vec3(0,0,h)) - occ_at(p - vec3(0,0,h))));
             if (any(isnan(n))) n = -dir;
-            vec3  uvw  = (p - pc.vox_origin) / pc.vox_extent;
-            vec3 emis = textureLod(voxel_tex, fract(p / pc.vox_extent), 0.0).rgb;
+            vec3 emis = textureLod(emission_tex, fract(p / pc.vox_extent), 0.0).rgb;
             float ndl  = max(dot(n, normalize(vec3(0.5, 0.8, 0.3))), 0.0);
             vec3  shade = vec3(0.18 + 0.6 * ndl);              // gray relief
             imageStore(debug_out, px, vec4(shade + emis, 1.0));
