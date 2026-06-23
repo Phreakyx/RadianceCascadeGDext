@@ -1,12 +1,18 @@
 # Radiance Cascade GI (GDExtension plugin)
 
 Compute-based Radiance Cascades global illumination, packaged as a standalone
-GDExtension. It was extracted from the game's monolithic `PeerlessCPP` extension.
+GDExtension. This was heavily inspired from the work of Alexander Sannikov
+which you can read more about here:https://mini.gmshaders.com/p/radiance-cascades
+
+So far this is an incomplete implementation using Godot's own CompositeEffect
+pipeline but that is a limitation for example not having access to the albedo
+G buffer and due to that the plugin is currently purely additive.
+
+It uses a dynamic voxelizaiton pipeline that updates as a player moves in real time.
 
 ## Contents
 
 ```
-addons/radiance_cascade/
   radiance_cascade.gdextension   # extension manifest (entry: radiance_cascade_library_init)
   plugin.cfg / plugin.gd         # EditorPlugin; registers the manager autoload
   radiance_cascade_manager.gd    # runtime glue: wires RCCompositorEffect -> CRadianceCascade
@@ -16,7 +22,7 @@ addons/radiance_cascade/
   SConstruct                     # standalone build (uses godot-cpp submodule below)
   RadianceCascade.sln			 # Visual Studio solution
   bin/                           # build output (referenced by the .gdextension)
-  godot-cpp/                     # add as a git submodule (NOT committed here)
+  godot-cpp/                     # submodule
 ```
 
 ## Build (you must do this — it wasn't compiled here)
