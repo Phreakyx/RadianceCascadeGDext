@@ -2,7 +2,7 @@
 
 Compute-based Radiance Cascades global illumination, packaged as a standalone
 GDExtension. This was heavily inspired from the work of Alexander Sannikov
-which you can read more about here:https://mini.gmshaders.com/p/radiance-cascades
+which you can read more about here: https://mini.gmshaders.com/p/radiance-cascades
 
 So far this is an incomplete implementation using Godot's own CompositeEffect
 pipeline but that is a limitation for example not having access to the albedo
