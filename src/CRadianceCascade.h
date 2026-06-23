@@ -566,10 +566,9 @@ namespace godot
         CascadeDesc _cascades[RC_CASCADES];
         uint32_t    _total_buckets = 0, _total_probes = 0, _total_rad = 0;   // summed buffer sizes across cascades
         RID         _cascade_buf;                 // SSBO holding the table, bound at b7 (and b2 for indirect)
-        float       _dist_mult = 1.0f;            // Sannikov "Dist mult": global probe-spacing scale
-        float       _step_mult = 1.0f;            // Sannikov "Step mult": global cascade interval/reach scale
-        float       _cascade_scale = 2.0f;        // per-cascade geometric ratio for spacing AND interval.
-        // 2.0 = canonical (current). <2 = gentler ramp (Sannikov).
+        float       _dist_mult = 1.0f;            // Global probe-spacing scale
+        float       _step_mult = 1.0f;            // Global cascade interval/reach scale
+        float       _cascade_scale = 2.0f;        // per-cascade geometric ratio for spacing AND interval. 2.0 = canonical (current). <2 = gentler ramp.
         float       _interval_overlap = 0.10f;    // fraction each cascade's near cone overruns its seam,
         // so the origin-true near cone (not the offset coarse probes) owns occlusion across the interval
         // cut. Cheap partial bilinear-fix; stacks with the cone footprint. 0 = exact tiling (old behavior).
