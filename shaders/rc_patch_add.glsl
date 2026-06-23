@@ -21,6 +21,7 @@ layout(set = 0, binding = 1, std430) coherent buffer Alloc     { uint  alloc_cou
 layout(set = 0, binding = 2, std430) coherent buffer ProbeKeys { ivec4 probe_keys[]; };
 layout(set = 0, binding = 3, std430) coherent buffer ProbeData { vec4  probe_world[]; };   // xyz center, w cascade
 layout(set = 0, binding = 4, std430) writeonly buffer LiveList { uint live_list[]; };
+layout(set = 0, binding = 8, std430) coherent  buffer RadTag   { uint rad_tag[]; };   // per-slot owner hash, persisted across frames (NOT cleared) for temporal amortization
 layout(set = 0, binding = 5, std140) uniform CameraData {
     mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view; vec2 jitter; vec2 _pad;
 } cam;
@@ -69,10 +70,17 @@ void find_or_create(uint c, ivec3 cell, vec3 center) {
                 uint idx   = cd.probe_off + local;   // probe_off is aligned to bucket_off in the table
                 probe_keys[idx]  = key;
                 probe_world[idx] = vec4(center, float(c));
+                // Temporal amortization: this slot's KEPT radiance (probe_radiance is never cleared) is only
+                // reusable if it still belongs to THIS cell. rad_tag persists across frames; compare owner
+                // hashes. On a mismatch — new cell, recycled slot, or a collision-shuffled slot — flag
+                // bootstrap (live_list bit 31) so trace refreshes ALL directions this frame, not just the
+                // rotating 1/N subset. One writer per slot per frame (the CAS winner) → race-free.
+                uint boot = (rad_tag[idx] != h) ? 0x80000000u : 0u;
+                rad_tag[idx] = h;
                 memoryBarrierBuffer();               // publish key/world before the index becomes visible
                 buckets[slot].y  = idx;
                 uint live_i = atomicAdd(alloc_count[c], 1u);   // live count AND compact index
-                live_list[cd.probe_off + live_i] = local;      // append this slot to the dispatch list
+                live_list[cd.probe_off + live_i] = local | boot;   // slot index (low 31b) + bootstrap flag (bit 31)
                 return;
             }
             // lost the race: cur now holds the winner's hash (h if same cell, else a collision)

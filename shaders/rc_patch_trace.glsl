@@ -23,7 +23,7 @@ struct CascadeDesc {
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 
-layout(push_constant) uniform PC { uint cascade; uint local_trans; uint _p1, _p2; } pc;
+layout(push_constant) uniform PC { uint cascade; uint local_trans; uint frame; uint amortize_n; } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu;
 
@@ -41,7 +41,15 @@ void main() {
     uint d   = gid % cd.dirs;
     if (i >= alloc_count[pc.cascade]) return;            // past live list (dispatch rounding)
 
-    uint slot_local = live_list[cd.probe_off + i];       // compact → actual slot
+    uint entry      = live_list[cd.probe_off + i];       // compact → actual slot (+ bootstrap flag in bit 31)
+    uint slot_local = entry & 0x7fffffffu;
+    bool bootstrap  = (entry & 0x80000000u) != 0u;       // owner changed this frame → must refresh ALL dirs
+    // Temporal amortization: a surviving probe re-traces only the rotating 1/N subset of its directions this
+    // frame; the rest keep last frame's (same-cell) radiance, which the merge/gather still read. amortize_n=1
+    // ⇒ every direction every frame (off; no behavioural change). Pure-ALU decision, no extra memory read.
+    bool in_subset  = (pc.amortize_n <= 1u) || ((d % pc.amortize_n) == (pc.frame % pc.amortize_n));
+    if (!bootstrap && !in_subset) return;                // keep this direction's persisted radiance
+
     uint idx        = cd.probe_off + slot_local;
     vec3 origin     = probe_world[idx].xyz;
 

@@ -44,6 +44,11 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "interval_overlap", PROPERTY_HINT_RANGE, "0.0,0.5,0.01"),
         "set_interval_overlap", "get_interval_overlap");
 
+    ClassDB::bind_method(D_METHOD("set_trace_amortization", "v"), &CRadianceCascade::set_trace_amortization);
+    ClassDB::bind_method(D_METHOD("get_trace_amortization"), &CRadianceCascade::get_trace_amortization);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "trace_amortization", PROPERTY_HINT_RANGE, "1,64,1"),
+        "set_trace_amortization", "get_trace_amortization");
+
     ClassDB::bind_method(D_METHOD("set_local_transmittance", "v"), &CRadianceCascade::set_local_transmittance);
     ClassDB::bind_method(D_METHOD("get_local_transmittance"), &CRadianceCascade::get_local_transmittance);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "local_transmittance"),
@@ -454,6 +459,16 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         // probe_radiance: uvec2 (8 B) per (slot, direction)
         _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t) * 2);
 
+        // probe_rad_tag: uint owner-hash per slot. Persisted across frames (never per-frame cleared) so the
+        // trace can tell whether a slot's KEPT radiance still belongs to the current cell (temporal amortization).
+        // Init to INVALID (0xffffffff, which the add hash never produces) → frame 1 every probe bootstraps.
+        {
+            PackedByteArray tag_init; tag_init.resize(_total_probes * sizeof(uint32_t));
+            memset(tag_init.ptrw(), 0xff, tag_init.size());
+            _probe_rad_tag = _rd->storage_buffer_create(_total_probes * sizeof(uint32_t), tag_init);
+            ERR_FAIL_COND_MSG(!_probe_rad_tag.is_valid(), "RC: probe_rad_tag buffer failed");
+        }
+
         // buckets: uvec2 (8 B) per slot  — already sized by _total_buckets, unchanged
         _patch_buckets = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t) * 2);
 
@@ -780,6 +795,7 @@ void CRadianceCascade::_build_static_sets()
         Ref<RDUniform> u5; u5.instantiate(); u5->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
         u5->set_binding(5); u5->add_id(_camera_ubo); u.append(u5);
         u.append(ssbo(7, _cascade_buf));
+        u.append(ssbo(8, _probe_rad_tag));    // ← NEW: per-slot owner tag (temporal amortization)
         _patch_add_set0 = _rd->uniform_set_create(u, _patch_add_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_add_set0.is_valid(), "RC: patch add set failed");
     }
@@ -1240,7 +1256,7 @@ void CRadianceCascade::_free_rids()
     safe_free(_patch_indirect_pipeline); safe_free(_patch_indirect_shader); safe_free(_patch_indirect_set0);
     safe_free(_patch_trace_pipeline); safe_free(_patch_trace_shader); safe_free(_patch_trace_set0);
     safe_free(_patch_world); safe_free(_patch_keys); safe_free(_patch_alloc); safe_free(_patch_buckets); safe_free(_patch_live);
-    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
+    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_rad_tag); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
     safe_free(_patch_gather_shader); safe_free(_patch_gather_pipeline); safe_free(_patch_gather_set0);
     safe_free(_cascade_buf);
     safe_free(_patch_merge_pipeline); safe_free(_patch_merge_shader); safe_free(_patch_merge_set0);
@@ -1606,9 +1622,11 @@ void CRadianceCascade::_dispatch_patch_trace()
         _rd->compute_list_bind_compute_pipeline(l, _patch_trace_pipeline);
         _rd->compute_list_bind_uniform_set(l, _patch_trace_set0, 0);
         _rd->compute_list_bind_uniform_set(l, _trace_voxel_set2, 2);
+        const uint32_t amort_frame = _frame_index++;   // advance the direction-amortization rotation once per frame
         for (uint32_t c = 0; c < RC_CASCADES; ++c)
         {
             RCPatchTracePC pc{}; pc.cascade = c; pc.local_trans = _local_transmittance ? 1u : 0u;
+            pc.frame = amort_frame; pc.amortize_n = _trace_amortization;
             PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
             _rd->compute_list_set_push_constant(l, b, b.size());
             _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, c * 12);  // 3 uints/cascade

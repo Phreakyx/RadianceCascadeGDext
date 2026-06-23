@@ -63,7 +63,7 @@ void main() {
 
     uint i = gl_GlobalInvocationID.x;                        // i-th LIVE probe (compact)
     if (i >= alloc_count[c]) return;                         // past live list (dispatch rounding)
-    uint slot_local = live_list[cd.probe_off + i];           // compact → actual slot
+    uint slot_local = live_list[cd.probe_off + i] & 0x7fffffffu;   // compact → actual slot (mask add's bit-31 bootstrap flag)
     uint idx        = cd.probe_off + slot_local;
     vec3 W   = probe_world[idx].xyz;
 
