@@ -99,14 +99,19 @@ void CRadianceCascade::_ready()
     if (Engine::get_singleton()->is_editor_hint()) return;
     add_to_group("radiance_cascade");                                  // host effect finds us via this group
     _rd = RenderingServer::get_singleton()->get_rendering_device();
-    set_physics_process(true);                                         // enable the main-thread per-frame driver
+    set_process(true);                                                 // _process: feed the active camera each frame
+    set_physics_process(true);                                         // _physics_process: occluders + region recenter
 }
 
 void CRadianceCascade::_process(double delta)
 {
-    // No per-frame work here: the whole pipeline is driven by the host effect
-    // calling dispatch() at render time, not by the main-loop tick.
     if (Engine::get_singleton()->is_editor_hint()) return;
+    // Auto-feed the active camera every rendered frame — no external camera script
+    // needed. dispatch() (render thread) consumes these via the _camera_dirty flag.
+    Camera3D* cam = _find_camera();
+    if (!cam) return;
+    set_camera_params(cam->get_near(), cam->get_far());
+    set_camera_matrices(cam->get_camera_projection(), cam->get_global_transform().inverse());  // world->view
 }
 
 // Main-thread per-frame driver. dispatch() runs on the render thread, so anything
@@ -1321,20 +1326,25 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
             _needs_reinit = false;
         }
 
-        // First-time setup: centre the clip levels on the camera, snap the grids to
-        // the player, allocate GPU resources, then scan the whole scene tree
-        // (owner-of-owner = scene root) for static geometry + lights and bake once.
+        // First-time setup. Resolve the anchor (camera's CharacterBody3D parent, or the
+        // camera itself) and the current scene root WITHOUT relying on this node's
+        // parent/owner — so it works whether placed in a scene or spawned at runtime
+        // by the plugin manager.
+        Node3D* anchor = _find_player();
+        Vector3 anchor_pos = anchor ? anchor->get_global_position() : Vector3();
         if (!_clip_origins_inited)
         {
-            _init_clip_origins(cast_to<Node3D>(get_parent()->find_child("Camera3D"))->get_global_position());
+            _init_clip_origins(anchor_pos);
             _clip_origins_inited = true;
         }
-        set_voxel_region(cast_to<Node3D>(get_parent())->get_global_position());
+        set_voxel_region(anchor_pos);
 
         _init_pipelines(p_size);
 
-        scan_static_geometry(get_owner()->get_owner());
-        _upload_lights(get_owner()->get_owner());
+        SceneTree* st = get_tree();
+        Node* scene_root = st ? st->get_current_scene() : nullptr;
+        scan_static_geometry(scene_root);
+        _upload_lights(scene_root);
         _bake_voxels(); _voxel_dirty = false;
         return;
     }
@@ -2683,12 +2693,20 @@ void CRadianceCascade::update_dynamic_occluders()
     update_dynamic();
 }
 
+Camera3D* CRadianceCascade::_find_camera()
+{
+    Viewport* vp = get_viewport();
+    return vp ? vp->get_camera_3d() : nullptr;
+}
+
 Node3D* CRadianceCascade::_find_player()
 {
-    SceneTree* tree = get_tree();
-    Node* root = tree ? tree->get_current_scene() : nullptr;
-    if (!root) return nullptr;
-    return Object::cast_to<Node3D>(root->find_child("Player", true, false));
+    // The player is the active camera's CharacterBody3D parent (typical FPS rig).
+    // If the camera has no such parent, the camera itself is both camera and anchor.
+    Camera3D* cam = _find_camera();
+    if (!cam) return nullptr;
+    CharacterBody3D* body = Object::cast_to<CharacterBody3D>(cam->get_parent());
+    return body ? static_cast<Node3D*>(body) : static_cast<Node3D*>(cam);
 }
 
 

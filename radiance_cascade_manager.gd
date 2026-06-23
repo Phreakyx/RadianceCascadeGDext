@@ -1,28 +1,52 @@
 extends Node
-## Runtime glue for the Radiance Cascade plugin (registered as an autoload by plugin.gd).
+## Runtime glue for the Radiance Cascade plugin (autoload registered by plugin.gd).
 ##
-## Wires the CRadianceCascade node (group "radiance_cascade") into the active
-## WorldEnvironment's RCCompositorEffect. RCCompositorEffect also self-discovers the
-## node via the group, so this is the explicit, debuggable hookup point — game-specific
-## setup (sky color, ambient, input) stays in your own scene script.
+## For any scene whose WorldEnvironment compositor has an RCCompositorEffect, this:
+##   1. spawns a CRadianceCascade node automatically (if one isn't already present),
+##      so the user never has to add it by hand, and
+##   2. points the effect at that node.
+##
+## The CRadianceCascade node finds the active Camera3D itself and uses the camera's
+## CharacterBody3D parent as the player (or the camera itself if there is none), so
+## no camera script or manual player wiring is needed.
 
 func _ready() -> void:
-	# Re-wire whenever a fresh scene brings in the RC node or a WorldEnvironment.
+	# Scene loads add a WorldEnvironment / Camera3D / effect — re-check then.
 	get_tree().node_added.connect(_on_node_added)
-	_wire.call_deferred()
+	_ensure_rc.call_deferred()
 
 func _on_node_added(n: Node) -> void:
-	if n is CRadianceCascade or n is WorldEnvironment:
-		_wire.call_deferred()
+	if n is WorldEnvironment or n is Camera3D or n is RCCompositorEffect:
+		_ensure_rc.call_deferred()
 
-func _wire() -> void:
-	var rc := get_tree().get_first_node_in_group("radiance_cascade") as CRadianceCascade
-	if rc == null:
+func _ensure_rc() -> void:
+	var scene := get_tree().current_scene
+	if scene == null:
 		return
-	var we := _find_world_environment(get_tree().current_scene)
+
+	var we := _find_world_environment(scene)
 	if we == null or we.compositor == null:
 		return
-	for effect in we.compositor.compositor_effects:
+
+	# Only act on scenes that actually want GI (an RCCompositorEffect is present).
+	var effects: Array = we.compositor.compositor_effects
+	var has_rc_effect := false
+	for effect in effects:
+		if effect is RCCompositorEffect:
+			has_rc_effect = true
+			break
+	if not has_rc_effect:
+		return
+
+	# Spawn the node once if the scene doesn't already provide one.
+	var rc := get_tree().get_first_node_in_group("radiance_cascade") as CRadianceCascade
+	if rc == null:
+		rc = CRadianceCascade.new()
+		rc.name = "RadianceCascade"
+		scene.add_child(rc)
+
+	# Wire every RC effect to the node.
+	for effect in effects:
 		if effect is RCCompositorEffect:
 			effect.rc_node = rc
 

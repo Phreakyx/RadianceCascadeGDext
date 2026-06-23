@@ -519,7 +519,8 @@ namespace godot
 
         // ── Per-frame drivers (main thread) ──────────────────────────────────
         void update_dynamic_occluders();    // feed cached occluders' shadow meshes into the dynamic API
-        Node3D* _find_player();             // find the "Player" node from the scene root
+        Camera3D* _find_camera();           // the viewport's active Camera3D
+        Node3D* _find_player();             // camera's CharacterBody3D parent, else the camera itself
 
         // ── Debug ────────────────────────────────────────────────────────────
         void _debug_print_probe_counts();   // blocking readback of _patch_alloc, gated
