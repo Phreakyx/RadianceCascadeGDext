@@ -807,6 +807,7 @@ void CRadianceCascade::_build_static_sets()
         TypedArray<RDUniform> u;
         u.append(ssbo(0, _patch_buckets)); u.append(ssbo(1, _patch_alloc));
         u.append(ssbo(2, _patch_keys));    u.append(ssbo(3, _patch_world));
+        u.append(ssbo(4, _patch_live));    // ← compact live-slot list (merge now compacts like trace)
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
         u.append(ssbo(8, _reduced_radiance));        // ← NEW: pre-reduced continuation

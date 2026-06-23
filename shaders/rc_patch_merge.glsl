@@ -9,13 +9,18 @@
 // (sx up to 2*3+1=7 into a 4-wide oct grid) and injected garbage continuation into c0/c2.
 //   merged_rad   = interval_rad + interval_trans . avg_{r^2}( continuation_rad )
 //   merged_trans = interval_trans . avg_{r^2}( continuation_trans )   <- cumulative transparency to inf
-// Slot-keyed: iterate the whole hash region, skip empties; storage index = slot, stable.
+// Slot-keyed: iterate the COMPACT live list (live_list[probe_off + i], i < alloc_count[c]),
+// mirroring rc_patch_trace; storage index = slot, stable. (Was: one thread per hash slot over
+// the whole region + skip empties — wasted ~bucket_cap threads, e.g. 2M for c0, vs the far
+// smaller live count.) Buckets is still read for the c+1 neighbour hash lookups below.
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0, std430) readonly buffer Buckets   { uvec2 buckets[]; };
+layout(set = 0, binding = 0, std430) readonly buffer Buckets   { uvec2 buckets[]; };       // c+1 neighbour lookups
+layout(set = 0, binding = 1, std430) readonly buffer Alloc     { uint  alloc_count[]; };   // live probes per cascade
 layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_keys[]; };
 layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
+layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
 layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
 
 struct CascadeDesc {
@@ -56,12 +61,10 @@ void main() {
     CascadeDesc cd = cascades[c];
     CascadeDesc cn = cascades[c + 1u];
 
-    uint slot_local = gl_GlobalInvocationID.x;
-    if (slot_local >= cd.bucket_cap) return;
-    uvec2 bk = buckets[cd.bucket_off + slot_local];
-    if (bk.x == EMPTY || bk.y == INVALID) return;            // empty / half-built slot -> skip
-
-    uint idx = cd.probe_off + slot_local;
+    uint i = gl_GlobalInvocationID.x;                        // i-th LIVE probe (compact)
+    if (i >= alloc_count[c]) return;                         // past live list (dispatch rounding)
+    uint slot_local = live_list[cd.probe_off + i];           // compact → actual slot
+    uint idx        = cd.probe_off + slot_local;
     vec3 W   = probe_world[idx].xyz;
 
     vec3  sp = W / cn.spacing - 0.5;

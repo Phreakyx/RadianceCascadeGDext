@@ -2,11 +2,11 @@
 #version 450
 
 // Sparse-RC (cascaded, NON-SHARED) — build indirect dispatch args. One thread per cascade.
-// TRACE iterates the COMPACT live list (live_list[0..alloc_count); see rc_patch_trace), so its
-// dispatch is sized to the live probe count. MERGE iterates the WHOLE hash region (bucket_cap)
-// and skips empties, so it's sized to the fixed slot count.
+// TRACE and MERGE both iterate the COMPACT live list (live_list[0..alloc_count); see
+// rc_patch_trace / rc_patch_merge), so both dispatches are sized to the live probe count.
+// TRACE is per (probe,dir); MERGE is per probe (it loops dirs internally).
 //   block 0 (cascades 0..N-1): TRACE  groups = ceil(alloc_count[c] * dirs / local_size)
-//   block 1 (cascades 0..N-1): MERGE  groups = ceil(bucket_cap          / local_size)
+//   block 1 (cascades 0..N-1): MERGE  groups = ceil(alloc_count[c]        / local_size)
 
 layout(local_size_x = 16) in;
 
@@ -32,8 +32,8 @@ void main() {
     groups[c*3u + 1u] = 1u;
     groups[c*3u + 2u] = 1u;
 
-    uint base = pc.num_cascades * 3u;                            // MERGE: whole region (unchanged)
-    groups[base + c*3u + 0u] = (cd.bucket_cap + pc.local_size - 1u) / pc.local_size;
+    uint base = pc.num_cascades * 3u;                            // MERGE: live probes (compact, per-probe)
+    groups[base + c*3u + 0u] = (alloc_count[c] + pc.local_size - 1u) / pc.local_size;
     groups[base + c*3u + 1u] = 1u;
     groups[base + c*3u + 2u] = 1u;
 }
