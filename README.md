@@ -28,8 +28,12 @@ For more info check [Architecture](ARCHITECTURE.md) and [Implementation Analysis
 ```
 
 ## Build (you must do this — it wasn't compiled here)
-
-   Open the project in Visual Studio and build Release and Debug or:
+   Dependencies: [Godot Dependency Docs](https://docs.godotengine.org/en/4.4/contributing/development/compiling/compiling_for_windows.html#requirements)
+   
+   Open the project in Visual Studio and build Release and Debug
+   It needs to compile first so that intellisense figures stuff out.
+   
+   For Manual Compile simply run in the root folder:
    ```
    scons platform=windows target=template_debug
    scons platform=windows target=template_release
