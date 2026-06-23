@@ -150,7 +150,11 @@ float sdf_skip(vec3 W, float diam, bool in0) {
     return (skip > rctp.voxel_size) ? skip : 0.0;                   // only worth it past one voxel
 }
 
-vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_end) {
+// local_trans: 0 = legacy from-origin pre-roll (transmittance carried from the probe through
+// t_start). !=0 = interval-local — skip the pre-roll so this cascade's radiance AND transmittance
+// are measured fresh from t_start, and the merge chain (Π of finer cascades' it.a) supplies the
+// upstream T[0,t_start] attenuation exactly once instead of re-baking it per cascade.
+vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_end, uint local_trans) {
     float trans = 1.0;
     vec3  acc   = vec3(0.0);
     float t     = rctp.voxel_size;
@@ -158,8 +162,12 @@ vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_
     // current_voxel(W): voxel size of the level the point sits in → coarse far ⇒ big steps
     #define STEP_FOR(W, diam, vs) (min(max((diam) * 0.5, (vs)), 4.0 * (vs)))
 
-    // Phase 1: [voxel_size, t_start) — transmittance + emission pre-roll
-    for (uint i = 0u; i < rctp.max_steps && t < t_start; ++i) {
+    // Phase 1: [voxel_size, t_start) — transmittance + emission pre-roll. SKIPPED when
+    // local_trans!=0: the near region belongs to finer cascades, and the merge chain supplies
+    // its T[0,t_start] attenuation once. Running it here re-bakes that attenuation into this
+    // cascade too, double-darkening far cascades (only visible in enclosed scenes; open space
+    // is SDF-skipped so T≈1 and the two modes coincide). trans/acc stay at 1/0 when skipped.
+    for (uint i = 0u; i < rctp.max_steps && t < t_start && local_trans == 0u; ++i) {
         vec3  W     = origin + dir * t;
         float diam  = max(rctp.voxel_size, 2.0 * aperture_tan * t);
         vec3  gate0 = (W - rctp.vox_origin) / rctp.vox_extent;     // GATE only

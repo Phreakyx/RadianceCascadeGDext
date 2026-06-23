@@ -82,7 +82,7 @@ namespace godot
     // rc_patch_indirect.glsl — turn live probe counts into indirect-dispatch args.
     struct alignas(16) RCPatchIndirectPC { uint32_t num_cascades, local_size, _b, _c; };
     // rc_patch_trace.glsl — which cascade this dispatch traces.
-    struct alignas(16) RCPatchTracePC { uint32_t cascade, _p0, _p1, _p2; };
+    struct alignas(16) RCPatchTracePC { uint32_t cascade, local_trans, _p1, _p2; };
 
     // rc_patch_lookup.glsl — debug readout of probes / radiance for one cascade.
     struct alignas(16) RCPatchLookupPC
@@ -293,6 +293,9 @@ namespace godot
             _cascade_dirty = true;                      // rebuilt at top of dispatch(), same as dist/step
         }
         float get_interval_overlap() const { return _interval_overlap; }
+
+        void set_local_transmittance(bool v) { _local_transmittance = v; }   // per-frame PC; no table rebuild
+        bool get_local_transmittance() const { return _local_transmittance; }
 
         void set_probe_seed_max_h(int v) { _probe_seed_max_h = MAX(v, 64); }   // coarse-cascade seed lattice height
         int  get_probe_seed_max_h() const { return _probe_seed_max_h; }
@@ -563,6 +566,9 @@ namespace godot
         float       _interval_overlap = 0.10f;    // fraction each cascade's near cone overruns its seam,
         // so the origin-true near cone (not the offset coarse probes) owns occlusion across the interval
         // cut. Cheap partial bilinear-fix; stacks with the cone footprint. 0 = exact tiling (old behavior).
+        bool        _local_transmittance = true;  // true = interval-local trace (correct merge chain; the
+        // pre-roll's T[0,t_start] attenuation is supplied once by finer cascades). false = legacy
+        // from-origin pre-roll, which double-darkens far cascades in enclosed scenes. Per-frame trace PC.
         bool        _cascade_dirty = false;       // set by the mult setters, consumed at top of dispatch()
         int         _probe_seed_max_h = 1080;
 

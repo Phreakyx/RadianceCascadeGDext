@@ -44,6 +44,11 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "interval_overlap", PROPERTY_HINT_RANGE, "0.0,0.5,0.01"),
         "set_interval_overlap", "get_interval_overlap");
 
+    ClassDB::bind_method(D_METHOD("set_local_transmittance", "v"), &CRadianceCascade::set_local_transmittance);
+    ClassDB::bind_method(D_METHOD("get_local_transmittance"), &CRadianceCascade::get_local_transmittance);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "local_transmittance"),
+        "set_local_transmittance", "get_local_transmittance");
+
     ClassDB::bind_method(D_METHOD("set_probe_seed_max_h", "v"), &CRadianceCascade::set_probe_seed_max_h);
     ClassDB::bind_method(D_METHOD("get_probe_seed_max_h"), &CRadianceCascade::get_probe_seed_max_h);
     ADD_PROPERTY(PropertyInfo(Variant::INT, "probe_seed_max_h", PROPERTY_HINT_RANGE, "360,2160,1"),
@@ -1636,7 +1641,7 @@ void CRadianceCascade::_dispatch_patch_trace()
         _rd->compute_list_bind_uniform_set(l, _trace_voxel_set2, 2);
         for (uint32_t c = 0; c < RC_CASCADES; ++c)
         {
-            RCPatchTracePC pc{}; pc.cascade = c;
+            RCPatchTracePC pc{}; pc.cascade = c; pc.local_trans = _local_transmittance ? 1u : 0u;
             PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
             _rd->compute_list_set_push_constant(l, b, b.size());
             _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, c * 12);  // 3 uints/cascade

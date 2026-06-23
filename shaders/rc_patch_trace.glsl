@@ -23,7 +23,7 @@ struct CascadeDesc {
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 
-layout(push_constant) uniform PC { uint cascade; uint _p0, _p1, _p2; } pc;
+layout(push_constant) uniform PC { uint cascade; uint local_trans; uint _p1, _p2; } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu;
 
@@ -48,7 +48,7 @@ void main() {
     vec2 e   = (vec2(float(d % cd.oct_res), float(d / cd.oct_res)) + 0.5) / float(cd.oct_res);
     vec3 dir = oct_to_dir(e);
 
-    vec4 r = rc_trace(origin, dir, cd.aperture, cd.t_start, cd.t_end);
+    vec4 r = rc_trace(origin, dir, cd.aperture, cd.t_start, cd.t_end, pc.local_trans);
     probe_radiance[cd.rad_off + slot_local * cd.dirs + d] =
         uvec2(packHalf2x16(r.rg), packHalf2x16(vec2(r.b, r.a)));
 }
