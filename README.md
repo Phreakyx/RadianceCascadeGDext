@@ -5,7 +5,7 @@ GDExtension. This was heavily inspired from the work of Alexander Sannikov
 and the Radiance Cascades Discord Server.
 Read more about the technique here: https://mini.gmshaders.com/p/radiance-cascades
 
-So far this is an incomplete implementation using Godot's own CompositeEffect
+So far this is an incomplete implementation using Godot's own CompositeEffect (using 4.7 stable release)
 pipeline but that is a limitation for example not having access to the albedo
 G buffer and due to that the plugin is currently purely additive.
 
