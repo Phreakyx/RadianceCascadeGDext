@@ -1306,6 +1306,7 @@ void CRadianceCascade::_free_rids()
 // ── Dispatch entry point ───────────────────────────────────────────────────
 void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color, Vector2i p_size)
 {
+    if (Engine::get_singleton()->is_editor_hint()) return;   // GI runs only at game runtime, never in the editor
     // The per-frame driver. First call (or after a resize) lazily builds all GPU
     // resources, scans scene geometry + lights and does the initial bake, then
     // returns. Steady state runs the full GI chain in order:

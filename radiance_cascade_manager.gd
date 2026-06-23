@@ -11,6 +11,8 @@ extends Node
 ## no camera script or manual player wiring is needed.
 
 func _ready() -> void:
+	if Engine.is_editor_hint():
+		return   # autoload logic (spawning the GI node, wiring) is game-runtime only
 	# Scene loads add a WorldEnvironment / Camera3D / effect — re-check then.
 	get_tree().node_added.connect(_on_node_added)
 	_ensure_rc.call_deferred()

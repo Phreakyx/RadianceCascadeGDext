@@ -10,6 +10,11 @@ func _init() -> void:
 	needs_normal_roughness = true
 
 func _render_callback(_effect_callback_type: int, render_data: RenderData) -> void:
+	# This effect is @tool, so it also fires for the editor's 3D viewport. GI must
+	# run only at game runtime, so bail out in the editor.
+	if Engine.is_editor_hint():
+		return
+
 	var scene_buffers := render_data.get_render_scene_buffers() as RenderSceneBuffersRD
 	if scene_buffers == null:
 		return
