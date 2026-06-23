@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{a1000000-0000-0000-0000-000000000001}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{a1000000-0000-0000-0000-000000000002}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{a1000000-0000-0000-0000-000000000003}</UniqueIdentifier>
+      <Extensions>glsl;glslinc</Extensions>
+    </Filter>
+    <Filter Include="Build &amp; Plugin">
+      <UniqueIdentifier>{a1000000-0000-0000-0000-000000000004}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\CRadianceCascade.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\register_types.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\CRadianceCascade.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compat.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\register_types.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="SConstruct"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="radiance_cascade.gdextension"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="plugin.cfg"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="plugin.gd"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="radiance_cascade_manager.gd"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="RCCompositorEffect.gd"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="README.md"><Filter>Build &amp; Plugin</Filter></None>
+    <None Include="shaders\rc3d_voxel_emission_mip.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc3d_voxel_mip.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc3d_voxel_mip_aniso.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc3d_voxel_sdf.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_clip_inject.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_composite.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_dyn_occ_temporal.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_irradiance_atrous.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_irradiance_upsample.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_light_eval_inc.glslinc"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_add.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_clear.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_gather.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_gather_inc.glslinc"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_indirect.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_lookup.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_merge.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_reduce.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_patch_trace.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_slab_clear.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_trace.glslinc"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_voxel_debug.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_voxel_inject.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_voxelize_dynamic.glsl"><Filter>Shaders</Filter></None>
+    <None Include="shaders\rc_voxelize_mesh.glsl"><Filter>Shaders</Filter></None>
+  </ItemGroup>
+</Project>

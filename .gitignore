@@ -1,0 +1,7 @@
+/.vs
+*.dll
+/bin
+RadianceCascade.log
+RadianceCascade.vcxproj.user
+*.obj
+*.pdb

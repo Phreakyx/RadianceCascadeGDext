@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <ProjectGuid>{C7A4E2B1-5D3F-4A86-9B12-AC1DBE5F0042}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>RadianceCascade</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeBuildCommandLine>scons platform=windows target=template_debug optimize=debug debug_symbols=true use_hot_reload=yes compiledb=yes</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>scons -c platform=windows target=template_debug &amp;&amp; scons platform=windows target=template_debug optimize=debug debug_symbols=true use_hot_reload=yes compiledb=yes</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>scons -c platform=windows target=template_debug</NMakeCleanCommandLine>
+    <NMakeOutput>bin\radiance_cascade.windows.template_debug.x86_64.dll</NMakeOutput>
+    <NMakePreprocessorDefinitions>_DEBUG;WINDOWS_ENABLED;TYPED_METHOD_BIND;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>$(SolutionDir)godot-cpp\gdextension;$(SolutionDir)godot-cpp\include;$(SolutionDir)godot-cpp\gen\include;$(SolutionDir)src;$(NMakeIncludeSearchPath)</NMakeIncludeSearchPath>
+    <IntDir />
+    <OutDir />
+    <IncludePath>$(SolutionDir)godot-cpp\gdextension;$(SolutionDir)godot-cpp\include;$(SolutionDir)godot-cpp\gen\include;$(SolutionDir)src;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeBuildCommandLine>scons platform=windows target=template_release optimize=speed debug_symbols=true</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>scons -c platform=windows target=template_release &amp;&amp; scons platform=windows target=template_release optimize=speed debug_symbols=true</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>scons -c platform=windows target=template_release</NMakeCleanCommandLine>
+    <NMakeOutput>bin\radiance_cascade.windows.template_release.x86_64.dll</NMakeOutput>
+    <NMakePreprocessorDefinitions>NDEBUG;WINDOWS_ENABLED;TYPED_METHOD_BIND;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>$(SolutionDir)godot-cpp\gdextension;$(SolutionDir)godot-cpp\include;$(SolutionDir)godot-cpp\gen\include;$(SolutionDir)src;$(NMakeIncludeSearchPath)</NMakeIncludeSearchPath>
+    <IntDir />
+    <OutDir />
+    <IncludePath>$(SolutionDir)godot-cpp\gdextension;$(SolutionDir)godot-cpp\include;$(SolutionDir)godot-cpp\gen\include;$(SolutionDir)src;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SolutionDir)godot-cpp\gdextension;$(SolutionDir)godot-cpp\include;$(SolutionDir)godot-cpp\gen\include;$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\CRadianceCascade.cpp" />
+    <ClCompile Include="src\register_types.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\CRadianceCascade.h" />
+    <ClInclude Include="src\compat.h" />
+    <ClInclude Include="src\register_types.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="SConstruct" />
+    <None Include="radiance_cascade.gdextension" />
+    <None Include="plugin.cfg" />
+    <None Include="plugin.gd" />
+    <None Include="radiance_cascade_manager.gd" />
+    <None Include="RCCompositorEffect.gd" />
+    <None Include="README.md" />
+    <None Include="shaders\rc3d_voxel_emission_mip.glsl" />
+    <None Include="shaders\rc3d_voxel_mip.glsl" />
+    <None Include="shaders\rc3d_voxel_mip_aniso.glsl" />
+    <None Include="shaders\rc3d_voxel_sdf.glsl" />
+    <None Include="shaders\rc_clip_inject.glsl" />
+    <None Include="shaders\rc_composite.glsl" />
+    <None Include="shaders\rc_dyn_occ_temporal.glsl" />
+    <None Include="shaders\rc_irradiance_atrous.glsl" />
+    <None Include="shaders\rc_irradiance_upsample.glsl" />
+    <None Include="shaders\rc_light_eval_inc.glslinc" />
+    <None Include="shaders\rc_patch_add.glsl" />
+    <None Include="shaders\rc_patch_clear.glsl" />
+    <None Include="shaders\rc_patch_gather.glsl" />
+    <None Include="shaders\rc_patch_gather_inc.glslinc" />
+    <None Include="shaders\rc_patch_indirect.glsl" />
+    <None Include="shaders\rc_patch_lookup.glsl" />
+    <None Include="shaders\rc_patch_merge.glsl" />
+    <None Include="shaders\rc_patch_reduce.glsl" />
+    <None Include="shaders\rc_patch_trace.glsl" />
+    <None Include="shaders\rc_slab_clear.glsl" />
+    <None Include="shaders\rc_trace.glslinc" />
+    <None Include="shaders\rc_voxel_debug.glsl" />
+    <None Include="shaders\rc_voxel_inject.glsl" />
+    <None Include="shaders\rc_voxelize_dynamic.glsl" />
+    <None Include="shaders\rc_voxelize_mesh.glsl" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

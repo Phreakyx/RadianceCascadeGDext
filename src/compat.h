@@ -1,29 +1,9 @@
 // addons/radiance_cascade/src/compat.h
 // Include surface for the standalone Radiance Cascade GDExtension plugin.
-// (Copied from the game's compat.h, minus the GeometricTools/Mathematics headers
-//  that only the game's movement classes used — CRadianceCascade needs none of them.)
 #ifndef COMPAT_H
 #define COMPAT_H
 
-#ifdef IS_MODULE_BUILD
-    // --- MODULE BUILD INCLUDES AND ALIASES ---
-#include "scene/2d/node_2d.h"
-#include "scene/main/node.h"
-#include "core/string/string_name.h"
-//... include other necessary engine headers
-
-// Create aliases within a 'godot' namespace to match godot-cpp's convention.
-namespace godot
-{
-    using Node2D = ::Node2D;
-    using Node = ::Node;
-    using StringName = ::StringName;
-    //... add other aliases as needed
-}
-#else
-    // --- GDEXTENSION BUILD INCLUDES ---
-    // For GDExtensions, just include the godot-cpp headers.
-    // The classes are already in the 'godot' namespace.
+// --- GDEXTENSION BUILD INCLUDES ---
 #include <godot_cpp/classes/node2d.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/classes/node.hpp>
@@ -64,13 +44,12 @@ namespace godot
 #include <godot_cpp/classes/area_light3d.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
-#include <godot_cpp/classes/worker_thread_pool.hpp>   // WorkerThreadPool
-#include <mutex>                                       // std::mutex / std::lock_guard
+#include <godot_cpp/classes/worker_thread_pool.hpp>
+#include <mutex>
 #include <atomic>
 #include <shared_mutex>
 #include <vector>
 #include <unordered_map>
 #include <cstring>
-#endif
 
 #endif // COMPAT_H
