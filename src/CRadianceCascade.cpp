@@ -106,12 +106,6 @@ void CRadianceCascade::_ready()
 void CRadianceCascade::_process(double delta)
 {
     if (Engine::get_singleton()->is_editor_hint()) return;
-    // Auto-feed the active camera every rendered frame — no external camera script
-    // needed. dispatch() (render thread) consumes these via the _camera_dirty flag.
-    Camera3D* cam = _find_camera();
-    if (!cam) return;
-    set_camera_params(cam->get_near(), cam->get_far());
-    set_camera_matrices(cam->get_camera_projection(), cam->get_global_transform().inverse());  // world->view
 }
 
 // Main-thread per-frame driver. dispatch() runs on the render thread, so anything
@@ -120,6 +114,14 @@ void CRadianceCascade::_process(double delta)
 void CRadianceCascade::_physics_process(double delta)
 {
     if (Engine::get_singleton()->is_editor_hint()) return;
+
+    // Auto-feed the active camera every rendered frame — no external camera script
+    // needed. dispatch() (render thread) consumes these via the _camera_dirty flag.
+    Camera3D* cam = _find_camera();
+    if (!cam) return;
+    set_camera_params(cam->get_near(), cam->get_far());
+    set_camera_matrices(cam->get_camera_projection(), cam->get_global_transform().inverse());  // world->view
+
     if (!_initialized) return;                       // wait until dispatch() built the GPU pipelines
 
     if (!_dyn_occluders_scanned)                     // one-time scan of the scene's dynamic occluders
