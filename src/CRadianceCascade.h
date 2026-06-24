@@ -311,6 +311,8 @@ namespace godot
         Vector2 get_debug_inspect_uv() const     { return _dbg_inspect_uv; }
         void    set_debug_inspect_follow_mouse(bool v) { _dbg_inspect_follow_mouse = v; }
         bool    get_debug_inspect_follow_mouse() const { return _dbg_inspect_follow_mouse; }
+        void    set_debug_inspect_cascade(int v) { _dbg_inspect_cascade = (uint32_t) CLAMP(v, 0, (int) RC_CASCADES - 1); }
+        int     get_debug_inspect_cascade() const { return (int) _dbg_inspect_cascade; }
 
         void set_probe_seed_max_h(int v) { _probe_seed_max_h = MAX(v, 64); }   // coarse-cascade seed lattice height
         int  get_probe_seed_max_h() const { return _probe_seed_max_h; }
@@ -771,6 +773,7 @@ namespace godot
         bool _dbg_probe_counts = false;              // flip true to enable (or bind to a key)
         bool     _dbg_inspect = false;               // probe inspector: log the dominant c0 probe at _dbg_inspect_uv
         bool     _dbg_inspect_follow_mouse = true;   // true: sample under the mouse cursor; false: use _dbg_inspect_uv
+        uint32_t _dbg_inspect_cascade = 0;           // which cascade the inspector dumps (0..RC_CASCADES-1)
         Vector2  _dbg_inspect_uv = Vector2(0.5f, 0.5f); // screen UV to inspect (0.5,0.5 = centre / crosshair)
         uint64_t _dbg_inspect_frame = 0;             // separate throttle counter for the inspector readback
 

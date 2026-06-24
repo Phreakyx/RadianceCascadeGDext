@@ -58,6 +58,9 @@ void CRadianceCascade::_bind_methods()
     ClassDB::bind_method(D_METHOD("set_debug_inspect_follow_mouse", "v"), &CRadianceCascade::set_debug_inspect_follow_mouse);
     ClassDB::bind_method(D_METHOD("get_debug_inspect_follow_mouse"), &CRadianceCascade::get_debug_inspect_follow_mouse);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_inspect_follow_mouse"), "set_debug_inspect_follow_mouse", "get_debug_inspect_follow_mouse");
+    ClassDB::bind_method(D_METHOD("set_debug_inspect_cascade", "v"), &CRadianceCascade::set_debug_inspect_cascade);
+    ClassDB::bind_method(D_METHOD("get_debug_inspect_cascade"), &CRadianceCascade::get_debug_inspect_cascade);
+    ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_inspect_cascade", PROPERTY_HINT_RANGE, "0,4,1"), "set_debug_inspect_cascade", "get_debug_inspect_cascade");
 
     ClassDB::bind_method(D_METHOD("set_local_transmittance", "v"), &CRadianceCascade::set_local_transmittance);
     ClassDB::bind_method(D_METHOD("get_local_transmittance"), &CRadianceCascade::get_local_transmittance);
@@ -488,8 +491,8 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         // DEBUG probe inspector readback (128 u32): the dominant c0 probe's per-direction radiance at the inspect
         // pixel. Always allocated so the gather's set-0 binding 9 is satisfied even when the inspector is off.
         {
-            PackedByteArray z; z.resize(128 * sizeof(uint32_t)); memset(z.ptrw(), 0, z.size());
-            _probe_inspect_buf = _rd->storage_buffer_create(128 * sizeof(uint32_t), z);
+            PackedByteArray z; z.resize(512 * sizeof(uint32_t)); memset(z.ptrw(), 0, z.size());
+            _probe_inspect_buf = _rd->storage_buffer_create(512 * sizeof(uint32_t), z);
             ERR_FAIL_COND_MSG(!_probe_inspect_buf.is_valid(), "RC: probe_inspect buffer failed");
         }
 
@@ -1734,6 +1737,7 @@ void CRadianceCascade::_dispatch_patch_gather()
     if (_dbg_inspect) {
         pc._p0 = (uint32_t) CLAMP((int) (_dbg_inspect_uv.x * (float) _half_size.x), 0, (int) _half_size.x - 1);
         pc._p1 = (uint32_t) CLAMP((int) (_dbg_inspect_uv.y * (float) _half_size.y), 0, (int) _half_size.y - 1);
+        pc._p2 = (float) CLAMP((int) _dbg_inspect_cascade, 0, (int) RC_CASCADES - 1);   // inspect cascade
     } else { pc._p0 = 0xffffffffu; pc._p1 = 0xffffffffu; }
     PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
 
@@ -2980,8 +2984,8 @@ void CRadianceCascade::_debug_inspect_log()
     if (!_dbg_inspect || !_probe_inspect_buf.is_valid()) return;
     if ((_dbg_inspect_frame++ % 15ull) != 0ull) return;             // throttle the blocking readback
 
-    PackedByteArray data = _rd->buffer_get_data(_probe_inspect_buf, 0, 128 * sizeof(uint32_t));
-    if (data.size() < (int) (128 * sizeof(uint32_t))) return;
+    PackedByteArray data = _rd->buffer_get_data(_probe_inspect_buf, 0, 512 * sizeof(uint32_t));
+    if (data.size() < (int) (512 * sizeof(uint32_t))) return;
     const uint32_t* u = (const uint32_t*) data.ptr();
     const float*    f = (const float*)    data.ptr();
 
@@ -2991,13 +2995,14 @@ void CRadianceCascade::_debug_inspect_log()
         UtilityFunctions::print(String("[RC inspect] world=") + w + "  NO PROBE FOUND (gather miss)");
         return;
     }
-    UtilityFunctions::print(String("[RC inspect] world=") + w
+    uint32_t ic = (u[13] < (uint32_t) RC_CASCADES) ? u[13] : 0u;
+    UtilityFunctions::print(String("[RC inspect] c=") + itos((int) ic) + " world=" + w
         + " E=(" + String::num(f[5], 4) + ", " + String::num(f[6], 4) + ", " + String::num(f[7], 4) + ")"
         + " slot=" + itos((int) u[8])
         + " cell=(" + itos((int) u[9]) + ", " + itos((int) u[10]) + ", " + itos((int) u[11]) + ")"
         + " N=" + itos((int) _trace_amortization));
-    uint32_t dirs = _cascades[0].dirs;
-    for (uint32_t d = 0; d < dirs && (16u + d * 4u + 3u) < 128u; ++d) {
+    uint32_t dirs = _cascades[ic].dirs;
+    for (uint32_t d = 0; d < dirs && (16u + d * 4u + 3u) < 512u; ++d) {
         const float* r = f + 16 + d * 4;
         UtilityFunctions::print(String("    dir ") + itos((int) d)
             + "  rgb=(" + String::num(r[0], 4) + ", " + String::num(r[1], 4) + ", " + String::num(r[2], 4) + ")"

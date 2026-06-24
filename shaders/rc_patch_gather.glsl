@@ -128,25 +128,27 @@ void main() {
         E += L * cw * dw;
     }
 	E = (any(isnan(E)) || any(isinf(E))) ? vec3(0.0) : max(E, vec3(0.0));
-    // ---- DEBUG probe inspector: dump the dominant covering c0 probe at the target pixel ----
+    // ---- DEBUG probe inspector: dump the nearest probe in cascade uint(pc._p2) at the target pixel ----
     if (pc._p0 != 0xffffffffu && uint(px.x) == pc._p0 && uint(px.y) == pc._p1) {
-        int best_o = -1; float best_w = 0.0;
-        for (int o = 0; o < 8; ++o) if (nw[o] > best_w) { best_w = nw[o]; best_o = o; }
+        uint ic = uint(pc._p2);                                // inspect cascade (0..N-1); 0 = c0
+        CascadeDesc icd = cascades[ic];
+        ivec3 icell = ivec3(floor(world / icd.spacing));       // nearest cell in that cascade
+        uint  igi   = find_in_region(ivec4(icell, int(ic)), icd.bucket_off, icd.bucket_cap);
         inspect[0] = 1u;                                       // a surface pixel was inspected this frame
-        inspect[1] = (best_o >= 0) ? 1u : 0u;                  // a covering probe was found
+        inspect[1] = (igi != INVALID) ? 1u : 0u;              // a probe was found in that cascade
         inspect[2] = floatBitsToUint(world.x);
         inspect[3] = floatBitsToUint(world.y);
         inspect[4] = floatBitsToUint(world.z);
-        inspect[5] = floatBitsToUint(E.r);
+        inspect[5] = floatBitsToUint(E.r);                     // E is still c0's gathered irradiance (context)
         inspect[6] = floatBitsToUint(E.g);
         inspect[7] = floatBitsToUint(E.b);
-        if (best_o >= 0) {
-            uint  gi = nidx[best_o];
-            ivec4 k  = probe_keys[gi];
-            inspect[8]  = gi - cd.probe_off;                   // slot_local = probe identity
+        inspect[13] = ic;                                      // which cascade was inspected
+        if (igi != INVALID) {
+            ivec4 k = probe_keys[igi];
+            inspect[8]  = igi - icd.probe_off;                 // slot_local = probe identity
             inspect[9]  = uint(k.x); inspect[10] = uint(k.y); inspect[11] = uint(k.z); inspect[12] = uint(k.w);
-            for (uint d = 0u; d < cd.dirs; ++d) {
-                vec4 r = samp(gi, cd.rad_off, cd.probe_off, cd.dirs, d);   // MERGED radiance.rgb + transmittance.a
+            for (uint d = 0u; d < icd.dirs && (16u + d*4u + 3u) < 512u; ++d) {
+                vec4 r = samp(igi, icd.rad_off, icd.probe_off, icd.dirs, d);   // MERGED radiance.rgb + transmittance.a
                 inspect[16u + d*4u + 0u] = floatBitsToUint(r.r);
                 inspect[16u + d*4u + 1u] = floatBitsToUint(r.g);
                 inspect[16u + d*4u + 2u] = floatBitsToUint(r.b);
