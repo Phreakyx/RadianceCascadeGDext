@@ -1474,8 +1474,11 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
 
     if (_debug_view == DEBUG_VOXEL) { ensure_voxels(); _dispatch_voxel_debug(); _dispatch_composite(); return; }
     if (_debug_view == DEBUG_PATCHES) { _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_lookup(0); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PATCHES_RADIANCE) { _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    // Both radiance previews need a LIVE, MERGED field for lookup(1): without trace the probes show stale
+    // radiance (garbage on new probes when the camera moves); without merge the preview reads the raw c0
+    // interval (transmittance ≈ 1 → the sky term washes the frame white). Run the full probe chain here.
+    if (_debug_view == DEBUG_PATCHES_RADIANCE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
 
     // DEBUG_OFF and DEBUG_GATHER both run the full chain; composite decides blend vs raw
     if (_gpu_profile) _rd->capture_timestamp("rc_begin");
