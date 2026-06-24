@@ -494,6 +494,12 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         // long-scoreboard stalls; portable (no fp16). Trace writes the raw interval; merge folds in place.
         _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t));        // packed rgba, 4 B/entry
 
+        // Merge neighbour cache: 8 precomputed c+1 dense ids per probe. rc_patch_neighbours writes it after
+        // add; merge reads it instead of running find_in_region inline. Nsight showed merge is occupancy-
+        // limited by REGISTER pressure (not bandwidth — L2 hit 95%), so hoisting the hash-probe loop out of
+        // the merge kernel frees its registers → more resident warps → hides the radiance-load latency.
+        _patch_neighbours = _rd->storage_buffer_create(_total_probes * 8u * sizeof(uint32_t));
+
         // DEBUG probe inspector readback (128 u32): the dominant c0 probe's per-direction radiance at the inspect
         // pixel. Always allocated so the gather's set-0 binding 9 is satisfied even when the inspector is off.
         {
@@ -598,6 +604,7 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         load_cs("res://addons/radiance_cascade/shaders/rc_voxel_inject.glsl", _inject_shader, _inject_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_voxelize_dynamic.glsl", _dyn_voxelize_shader, _dyn_voxelize_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_merge.glsl", _patch_merge_shader, _patch_merge_pipeline);
+        load_cs("res://addons/radiance_cascade/shaders/rc_patch_neighbours.glsl", _patch_neighbours_shader, _patch_neighbours_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc3d_voxel_sdf.glsl", _sdf_shader, _sdf_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc3d_voxel_mip_aniso.glsl", _mip_aniso_shader, _mip_aniso_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc3d_voxel_emission_mip.glsl", _emis_mip_shader, _emis_mip_pipeline);
@@ -900,16 +907,26 @@ void CRadianceCascade::_build_static_sets()
         _patch_trace_set0 = _rd->uniform_set_create(u, _patch_trace_shader, 0);
     }
 
-    {   // merge set0
+    {   // merge set0 — neighbour ids are now precomputed (binding 9), so merge no longer needs buckets/keys
         TypedArray<RDUniform> u;
-        u.append(ssbo(0, _patch_buckets)); u.append(ssbo(1, _patch_alloc));
-        u.append(ssbo(2, _patch_keys));    u.append(ssbo(3, _patch_world));
+        u.append(ssbo(1, _patch_alloc));   u.append(ssbo(3, _patch_world));
         u.append(ssbo(4, _patch_live));    // ← compact live-slot list (merge now compacts like trace)
+        u.append(ssbo(9, _patch_neighbours));
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
         u.append(ssbo(8, _reduced_radiance));        // ← pre-reduced continuation
         _patch_merge_set0 = _rd->uniform_set_create(u, _patch_merge_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_merge_set0.is_valid(), "RC: patch merge set failed");
+    }
+
+    {   // neighbour-precompute set0 — buckets(0)/alloc(1)/keys(2)/world(3)/live(4)/cascade(7), writes neighbours(9)
+        TypedArray<RDUniform> u;
+        u.append(ssbo(0, _patch_buckets)); u.append(ssbo(1, _patch_alloc));
+        u.append(ssbo(2, _patch_keys));    u.append(ssbo(3, _patch_world));
+        u.append(ssbo(4, _patch_live));    u.append(ssbo(7, _cascade_buf));
+        u.append(ssbo(9, _patch_neighbours));
+        _patch_neighbours_set0 = _rd->uniform_set_create(u, _patch_neighbours_shader, 0);
+        ERR_FAIL_COND_MSG(!_patch_neighbours_set0.is_valid(), "RC: patch neighbours set failed");
     }
 
     {   // reduce set0  (probe_radiance 6, cascade table 7, scratch 8, last_seen 10 — iterates dense ids)
@@ -1344,6 +1361,7 @@ void CRadianceCascade::_free_rids()
     safe_free(_patch_gather_shader); safe_free(_patch_gather_pipeline); safe_free(_patch_gather_set0);
     safe_free(_cascade_buf);
     safe_free(_patch_merge_pipeline); safe_free(_patch_merge_shader); safe_free(_patch_merge_set0);
+    safe_free(_patch_neighbours_pipeline); safe_free(_patch_neighbours_shader); safe_free(_patch_neighbours_set0); safe_free(_patch_neighbours);
     safe_free(_reduced_radiance); safe_free(_patch_reduce_set0); safe_free(_patch_reduce_shader); safe_free(_patch_reduce_pipeline);
 
     safe_free(_sdf_set_writeA); safe_free(_sdf_set_writeB);
@@ -1477,8 +1495,8 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     // Both radiance previews need a LIVE, MERGED field for lookup(1): without trace the probes show stale
     // radiance (garbage on new probes when the camera moves); without merge the preview reads the raw c0
     // interval (transmittance ≈ 1 → the sky term washes the frame white). Run the full probe chain here.
-    if (_debug_view == DEBUG_PATCHES_RADIANCE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PATCHES_RADIANCE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_neighbours(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_neighbours(); _dispatch_patch_merge(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
 
     // DEBUG_OFF and DEBUG_GATHER both run the full chain; composite decides blend vs raw
     if (_gpu_profile) _rd->capture_timestamp("rc_begin");
@@ -1490,6 +1508,7 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     _dispatch_patch_rebuild();      if (_gpu_profile) _rd->capture_timestamp("rc_rebuild");
     _dispatch_patch_add();          if (_gpu_profile) _rd->capture_timestamp("rc_add");
     _dispatch_patch_trace();        if (_gpu_profile) _rd->capture_timestamp("rc_trace");
+    _dispatch_patch_neighbours();   if (_gpu_profile) _rd->capture_timestamp("rc_neighbours");
     _dispatch_patch_merge();        if (_gpu_profile) _rd->capture_timestamp("rc_merge");
     _dispatch_patch_gather();       if (_gpu_profile) _rd->capture_timestamp("rc_gather");
     _dispatch_irradiance_atrous(p_depth, p_normalRoughness);
@@ -1762,6 +1781,26 @@ void CRadianceCascade::_dispatch_patch_trace()
         }
         _rd->compute_list_end();
     }
+}
+
+void CRadianceCascade::_dispatch_patch_neighbours()
+{
+    // Precompute the 8 trilinear c+1 neighbour ids for every live probe (per cascade 0..N-2) so the merge
+    // reads them instead of running find_in_region inline — frees the merge kernel's registers → higher
+    // occupancy → hides its radiance-load latency (Nsight: long-scoreboard, not bandwidth). One thread per
+    // live c-probe (reuses the merge indirect group counts). All cascades write disjoint id ranges and only
+    // read the (shared, read-only) hashmap, so they run in ONE compute list with no inter-cascade barriers.
+    int64_t l = _rd->compute_list_begin();
+    _rd->compute_list_bind_compute_pipeline(l, _patch_neighbours_pipeline);
+    _rd->compute_list_bind_uniform_set(l, _patch_neighbours_set0, 0);
+    for (int c = 0; c < (int) RC_CASCADES - 1; ++c)
+    {
+        RCPatchMergePC pc{}; pc.cascade = (uint32_t) c;   // the neighbours shader reads only .cascade
+        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+        _rd->compute_list_set_push_constant(l, b, b.size());
+        _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, (RC_CASCADES + (uint32_t) c) * 12);
+    }
+    _rd->compute_list_end();   // barrier: neighbours written → merge reads them
 }
 
 void CRadianceCascade::_dispatch_patch_merge()

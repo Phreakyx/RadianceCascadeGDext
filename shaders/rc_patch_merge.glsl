@@ -17,11 +17,10 @@
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0, std430) readonly buffer Buckets   { uvec2 buckets[]; };       // c+1 neighbour lookups
-layout(set = 0, binding = 1, std430) readonly buffer Alloc     { uint  alloc_count[]; };   // live probes per cascade
-layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_keys[]; };
-layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
-layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
+layout(set = 0, binding = 1, std430) readonly buffer Alloc      { uint  alloc_count[]; };   // live probes per cascade
+layout(set = 0, binding = 3, std430) readonly buffer ProbeData  { vec4  probe_world[]; };
+layout(set = 0, binding = 4, std430) readonly buffer LiveList   { uint  live_list[]; };      // compact slot list
+layout(set = 0, binding = 9, std430) readonly buffer Neighbours { uint  neighbours[]; };     // 8 precomputed c+1 ids/probe (rc_patch_neighbours)
 layout(set = 0, binding = 6, std430) buffer ProbeRad { uint probe_radiance[]; };
 
 struct CascadeDesc {
@@ -35,25 +34,8 @@ layout(set = 0, binding = 8, std430) readonly buffer Reduced { uint reduced_in[]
 layout(push_constant) uniform PC { uint cascade; uint frame; uint amortize_n; uint _p2; } pc;
 // `frame`/`amortize_n` drive the lockstep amortization gate (same values trace uses this frame).
 
-const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
+const uint INVALID = 0xffffffffu;   // (find_in_region moved to rc_patch_neighbours; merge reads cached ids)
 
-uint hash_ivec4(ivec4 k) {
-    uint h = uint(k.x)*73856093u ^ uint(k.y)*19349663u ^ uint(k.z)*83492791u ^ uint(k.w)*2654435761u;
-    h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
-}
-uint find_in_region(ivec4 key, uint boff, uint bcap) {
-    uint h = hash_ivec4(key); if (h >= 0xfffffffeu) h = 1u;   // avoid EMPTY(ffffffff) & TOMB(fffffffe)
-    uint slot = boff + (h % bcap);
-    for (uint p = 0u; p < MAX_LINEAR; ++p) {
-        uvec2 b = buckets[slot];
-        if (b.x == EMPTY) return INVALID;
-        // Dense pool: the hashmap was rebuilt this frame from the ALIVE probes only, and every probe is
-        // keyed by its world cell, so a key match is always a live, correct-location probe — no gate needed.
-        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key) return b.y;
-        slot = boff + ((slot - boff + 1u) % bcap);
-    }
-    return INVALID;
-}
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // probe_radiance: this cascade's RAW (own slot) or c+1's MERGED continuation
     uint i = rad_off + (gidx - probe_off) * dirs + d;
     return rc_unpack_radiance(probe_radiance[i]);   // packed rgba (rgb radiance + transmittance)
@@ -77,10 +59,9 @@ void main() {
     vec3  f  = sp - vec3(b);
     uint  nidx[8]; float nw[8]; float wsum = 0.0;
     for (int o = 0; o < 8; ++o) {
-        ivec3 off  = ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
-        ivec3 cell = b + off;
-        uint  id   = find_in_region(ivec4(cell, int(c + 1u)), cn.bucket_off, cn.bucket_cap);
-        float w    = ((off.x==1)?f.x:1.0-f.x) * ((off.y==1)?f.y:1.0-f.y) * ((off.z==1)?f.z:1.0-f.z);
+        ivec3 off = ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
+        uint  id  = neighbours[idx * 8u + uint(o)];    // precomputed (no inline hash probe → fewer merge registers)
+        float w   = ((off.x==1)?f.x:1.0-f.x) * ((off.y==1)?f.y:1.0-f.y) * ((off.z==1)?f.z:1.0-f.z);
         nidx[o] = id;
         nw[o]   = (id == INVALID) ? 0.0 : w;
         wsum   += nw[o];
