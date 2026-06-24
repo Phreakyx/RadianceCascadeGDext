@@ -512,41 +512,49 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
             ERR_FAIL_COND_MSG(!_probe_rad_tag.is_valid(), "RC: probe_rad_tag buffer failed");
         }
 
-        // buckets: uvec2 (8 B) per slot. PERSISTENT now (the clear pass no longer wipes them), so they
-        // must be initialised to EMPTY/INVALID (0xffffffff) here — a zero-init would read as hash 0.
-        {
-            PackedByteArray bk_init; bk_init.resize(_total_buckets * sizeof(uint32_t) * 2);
-            memset(bk_init.ptrw(), 0xff, bk_init.size());
-            _patch_buckets = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t) * 2, bk_init);
-        }
+        // buckets: uvec2 (hash, dense-id) per hashmap slot. TRANSIENT — the clear pass wipes it to
+        // EMPTY every frame and the rebuild pass repopulates it from the alive probe pool, so no init
+        // is needed (clear runs before any read). Sized 2·pcap (load factor 0.5).
+        _patch_buckets = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t) * 2);
 
-        // last_seen: uint frame index per slot, persistent. 0 = never seen (any occupied slot is touched
-        // before it's read, and EMPTY slots are skipped by the evict pass, so the init value is inert).
+        // last_seen: uint frame index per DENSE PROBE ID (not per slot). 0 = free id; >0 = last frame the
+        // probe was seen. Drives eviction (rebuild) + live-list dedup (add). Init 0 → all ids start free.
         {
-            PackedByteArray ls_init; ls_init.resize(_total_buckets * sizeof(uint32_t));
+            PackedByteArray ls_init; ls_init.resize(_total_probes * sizeof(uint32_t));
             memset(ls_init.ptrw(), 0, ls_init.size());
-            _probe_last_seen = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t), ls_init);
+            _probe_last_seen = _rd->storage_buffer_create(_total_probes * sizeof(uint32_t), ls_init);
             ERR_FAIL_COND_MSG(!_probe_last_seen.is_valid(), "RC: last_seen buffer failed");
         }
 
-        // live_list: one slot index per live probe (compact). Indexed by probe_off + live_i,
-        // live_i < alloc_count[c] <= bucket_cap, so it fits the same per-cascade regions.
-        _patch_live = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t));
+        // live_list: one DENSE id (id - probe_off, + bootstrap bit) per live probe this frame (compact).
+        // Indexed by probe_off + live_i, live_i < alloc_count[c] <= pcap → fits the dense id space.
+        _patch_live = _rd->storage_buffer_create(_total_probes * sizeof(uint32_t));
         ERR_FAIL_COND_MSG(!_patch_live.is_valid(), "RC: live_list buffer failed");
+
+        // free-list: recycled dense ids (local, per cascade) at [probe_off + i]. No init needed (only read
+        // up to free_top, which starts 0). alloc_state: [c*2]=free_top, [c*2+1]=next_id bump counter; init 0.
+        _patch_freelist = _rd->storage_buffer_create(_total_probes * sizeof(uint32_t));
+        ERR_FAIL_COND_MSG(!_patch_freelist.is_valid(), "RC: freelist buffer failed");
+        {
+            PackedByteArray as_init; as_init.resize(RC_CASCADES * 2 * sizeof(uint32_t));
+            memset(as_init.ptrw(), 0, as_init.size());
+            _patch_alloc_state = _rd->storage_buffer_create(RC_CASCADES * 2 * sizeof(uint32_t), as_init);
+            ERR_FAIL_COND_MSG(!_patch_alloc_state.is_valid(), "RC: alloc_state buffer failed");
+        }
 
         _patch_indirect_buf = _rd->storage_buffer_create(
             sizeof(uint32_t) * 3 * 2 * RC_CASCADES, PackedByteArray(),   // [N trace][N merge]
             RenderingDevice::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
         ERR_FAIL_COND_MSG(!_patch_buckets.is_valid(), "RC: patch buffers failed");
 
-        // angular pre-reduce scratch: max over r>1 folds of (cn.bucket_cap * cd.dirs).
-        // oct={4,4,8,8,16} → r=2 only at c=1 (c2→c1) and c=3 (c4→c3); peak is the c=1 fold.
+        // angular pre-reduce scratch: max over r>1 folds of (cn.probe_cap * cd.dirs) — dense id space.
+        // oct={4,4,8,8,8} → r=2 only at c=1 (c2→c1) and c=3 (c4→c3); peak is the c=1 fold.
         uint32_t reduced_max = 0;
         for (uint32_t c = 0; c + 1u < RC_CASCADES; ++c)
         {
             uint32_t r = MAX(_cascades[c + 1].oct_res / _cascades[c].oct_res, 1u);
             if (r > 1u)
-                reduced_max = MAX(reduced_max, _cascades[c + 1].bucket_cap * _cascades[c].dirs);
+                reduced_max = MAX(reduced_max, _cascades[c + 1].probe_cap * _cascades[c].dirs);
         }
         _reduced_radiance = _rd->storage_buffer_create(reduced_max * sizeof(uint32_t) * 2u);  // uvec2
         ERR_FAIL_COND_MSG(!_reduced_radiance.is_valid(), "RC: reduced scratch buffer failed");
@@ -579,7 +587,7 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
                 pipe = _rd->compute_pipeline_create(sh);
             };
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_clear.glsl", _patch_clear_shader, _patch_clear_pipeline);
-        load_cs("res://addons/radiance_cascade/shaders/rc_patch_evict.glsl", _patch_evict_shader, _patch_evict_pipeline);
+        load_cs("res://addons/radiance_cascade/shaders/rc_patch_rebuild.glsl", _patch_rebuild_shader, _patch_rebuild_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_add.glsl", _patch_add_shader, _patch_add_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_lookup.glsl", _patch_lookup_shader, _patch_lookup_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_indirect.glsl", _patch_indirect_shader, _patch_indirect_pipeline);
@@ -853,18 +861,24 @@ void CRadianceCascade::_build_static_sets()
         Ref<RDUniform> u5; u5.instantiate(); u5->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
         u5->set_binding(5); u5->add_id(_camera_ubo); u.append(u5);
         u.append(ssbo(7, _cascade_buf));
-        u.append(ssbo(8, _probe_rad_tag));    // ← per-slot owner tag (temporal amortization)
-        u.append(ssbo(10, _probe_last_seen)); // ← persistent: last-seen frame (live dedup + staleness gate)
+        u.append(ssbo(8, _probe_rad_tag));    // per dense id: owner tag (temporal amortization / bootstrap)
+        u.append(ssbo(10, _probe_last_seen)); // per dense id: last-seen frame (live dedup)
+        u.append(ssbo(11, _patch_freelist));  // recycled dense ids
+        u.append(ssbo(12, _patch_alloc_state)); // (free_top, next_id) per cascade
         _patch_add_set0 = _rd->uniform_set_create(u, _patch_add_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_add_set0.is_valid(), "RC: patch add set failed");
     }
 
-    {   // evict set0  (persistent-bucket reclaim: buckets rw, last_seen ro)
+    {   // rebuild set0  (dense pool → repopulate hashmap + evict aged ids to the free-list)
         TypedArray<RDUniform> u;
         u.append(ssbo(0, _patch_buckets));
-        u.append(ssbo(1, _probe_last_seen));
-        _patch_evict_set0 = _rd->uniform_set_create(u, _patch_evict_shader, 0);
-        ERR_FAIL_COND_MSG(!_patch_evict_set0.is_valid(), "RC: patch evict set failed");
+        u.append(ssbo(2, _patch_keys));
+        u.append(ssbo(7, _cascade_buf));
+        u.append(ssbo(8, _probe_last_seen));
+        u.append(ssbo(11, _patch_freelist));
+        u.append(ssbo(12, _patch_alloc_state));
+        _patch_rebuild_set0 = _rd->uniform_set_create(u, _patch_rebuild_shader, 0);
+        ERR_FAIL_COND_MSG(!_patch_rebuild_set0.is_valid(), "RC: patch rebuild set failed");
     }
 
     {   // indirect set0  (cascade table at b2 here)
@@ -893,18 +907,17 @@ void CRadianceCascade::_build_static_sets()
         u.append(ssbo(4, _patch_live));    // ← compact live-slot list (merge now compacts like trace)
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
-        u.append(ssbo(8, _reduced_radiance));        // ← NEW: pre-reduced continuation
-        u.append(ssbo(10, _probe_last_seen));        // ← staleness gate: continuation only from cells seen this frame
+        u.append(ssbo(8, _reduced_radiance));        // ← pre-reduced continuation
         _patch_merge_set0 = _rd->uniform_set_create(u, _patch_merge_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_merge_set0.is_valid(), "RC: patch merge set failed");
     }
 
-    {   // reduce set0  (buckets 0, probe_radiance 6, cascade table 7, scratch 8)
+    {   // reduce set0  (probe_radiance 6, cascade table 7, scratch 8, last_seen 10 — iterates dense ids)
         TypedArray<RDUniform> u;
-        u.append(ssbo(0, _patch_buckets));
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
         u.append(ssbo(8, _reduced_radiance));
+        u.append(ssbo(10, _probe_last_seen));
         _patch_reduce_set0 = _rd->uniform_set_create(u, _patch_reduce_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_reduce_set0.is_valid(), "RC: patch reduce set failed");
     }
@@ -1321,7 +1334,8 @@ void CRadianceCascade::_free_rids()
     //PATCH
     safe_free(_patch_add_pipeline); safe_free(_patch_add_shader); safe_free(_patch_add_set0);
     safe_free(_patch_clear_pipeline); safe_free(_patch_clear_shader); safe_free(_patch_clear_set0);
-    safe_free(_patch_evict_pipeline); safe_free(_patch_evict_shader); safe_free(_patch_evict_set0);
+    safe_free(_patch_rebuild_pipeline); safe_free(_patch_rebuild_shader); safe_free(_patch_rebuild_set0);
+    safe_free(_patch_freelist); safe_free(_patch_alloc_state);
     safe_free(_patch_lookup_pipeline); safe_free(_patch_lookup_shader); safe_free(_patch_lookup_set0);
     safe_free(_patch_indirect_pipeline); safe_free(_patch_indirect_shader); safe_free(_patch_indirect_set0);
     safe_free(_patch_trace_pipeline); safe_free(_patch_trace_shader); safe_free(_patch_trace_set0);
@@ -1455,13 +1469,13 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
 
     _poll_dynamic_lights();   // moved DYNAMIC lights → arm a relight; ticked by ensure_voxels() below
 
-    _frame_index++;   // advance ONCE per frame, before any patch pass — add stamps last_seen with it, and
-                      // trace/merge read the SAME value (amortization rotation + persistent staleness gate).
+    _frame_index++;   // advance ONCE per frame, before any patch pass — rebuild/add/trace/merge all read
+                      // the SAME value (eviction age, last_seen stamp, amortization rotation).
 
     if (_debug_view == DEBUG_VOXEL) { ensure_voxels(); _dispatch_voxel_debug(); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PATCHES) { _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_lookup(0); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PATCHES_RADIANCE) { _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PATCHES) { _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_lookup(0); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PATCHES_RADIANCE) { _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_rebuild(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
 
     // DEBUG_OFF and DEBUG_GATHER both run the full chain; composite decides blend vs raw
     if (_gpu_profile) _rd->capture_timestamp("rc_begin");
@@ -1470,7 +1484,7 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     _dispatch_dynamic_voxelize();   if (_gpu_profile) _rd->capture_timestamp("rc_dyn_voxelize");
     _dispatch_dyn_occ_temporal();
     _dispatch_patch_clear();        if (_gpu_profile) _rd->capture_timestamp("rc_clear");
-    _dispatch_patch_evict();        if (_gpu_profile) _rd->capture_timestamp("rc_evict");   // movement-gated
+    _dispatch_patch_rebuild();      if (_gpu_profile) _rd->capture_timestamp("rc_rebuild");
     _dispatch_patch_add();          if (_gpu_profile) _rd->capture_timestamp("rc_add");
     _dispatch_patch_trace();        if (_gpu_profile) _rd->capture_timestamp("rc_trace");
     _dispatch_patch_merge();        if (_gpu_profile) _rd->capture_timestamp("rc_merge");
@@ -1543,7 +1557,7 @@ void CRadianceCascade::_build_cascade_table()
 
     const float spacing0 = 0.25f;
 
-    uint32_t boff = 0, roff = 0;
+    uint32_t boff = 0, poff = 0, roff = 0;   // hashmap-slot, dense-id, dense-radiance running offsets
     float    t = 0.0f;
     for (uint32_t c = 0; c < RC_CASCADES; ++c)
     {
@@ -1561,22 +1575,28 @@ void CRadianceCascade::_build_cascade_table()
                                                            // not the offset coarse probes, owns occlusion there
         t += len;                                          // next cascade still starts at the un-extended seam
 
-        cd.probe_cap = pcap[c];          // soft live-count cap (stats only; not a storage bound)
-        cd.bucket_cap = pcap[c] * 2u;     // real slot count → load factor 0.5
+        cd.probe_cap = pcap[c];          // DENSE probe-pool size for this cascade (id ∈ [0, pcap))
+        cd.bucket_cap = pcap[c] * 2u;     // hashmap slot count → load factor 0.5
 
-        // SLOT-KEYED: buckets, probe_world/keys, and radiance all share ONE slot space.
-        // probe_off MUST equal bucket_off, and every region advances by bucket_cap.
+        // DENSE-POOL layout (vs the old slot-keyed one): the hashmap (buckets) and the probe DATA pool
+        // (keys/world/radiance/rad_tag/last_seen, indexed by a stable dense id) are SEPARATE spaces.
+        //   bucket_off/_cap : transient hashmap, cleared + rebuilt every frame, sized 2·pcap (load 0.5)
+        //   probe_off       : dense id-space offset (Σ pcap)        — keys/world/rad_tag/last_seen/live/freelist
+        //   rad_off         : dense radiance offset (Σ pcap·dirs)   — half the old Σ(2·pcap·dirs)
+        // Consumers index storage as rad_off + (buckets.y - probe_off)·dirs, so they're unchanged; only
+        // what buckets.y holds (a dense id) and these offsets/sizes change.
         cd.bucket_off = boff;
-        cd.probe_off = boff;             // == bucket_off (parallel arrays indexed by slot_local)
+        cd.probe_off = poff;
         cd.rad_off = roff;
         cd._p0 = 0u;
 
-        boff += cd.bucket_cap;                 // buckets / world / keys advance by bucket_cap
-        roff += cd.bucket_cap * cd.dirs;       // radiance advances by bucket_cap * dirs
+        boff += cd.bucket_cap;                 // hashmap advances by bucket_cap (2·pcap)
+        poff += cd.probe_cap;                  // dense pool advances by pcap
+        roff += cd.probe_cap * cd.dirs;        // dense radiance advances by pcap · dirs
     }
-    _total_buckets = boff;
-    _total_probes = boff;                      // probe_world/keys sized = Σ bucket_cap (== _total_buckets)
-    _total_rad = roff;                       // radiance sized = Σ (bucket_cap * dirs)
+    _total_buckets = boff;                     // hashmap slots = Σ bucket_cap
+    _total_probes = poff;                      // dense probe pool = Σ pcap  (keys/world/rad_tag/last_seen/live/freelist)
+    _total_rad = roff;                         // dense radiance = Σ (pcap · dirs)  — ~half the old size
 
     PackedByteArray b; b.resize(sizeof(_cascades)); memcpy(b.ptrw(), _cascades, sizeof(_cascades));
     if (!_cascade_buf.is_valid()) _cascade_buf = _rd->storage_buffer_create(sizeof(_cascades), b);
@@ -1619,36 +1639,35 @@ void CRadianceCascade::_dispatch_composite()
 
 void CRadianceCascade::_dispatch_patch_clear()
 {
-    // Persistent buckets: this only zeroes the per-cascade live counters (one thread group covers
-    // them). The hash table itself is NOT wiped — it survives across frames and is trimmed by evict.
+    // Dense-pool design: wipe the TRANSIENT hashmap (buckets → EMPTY) and zero the per-cascade live
+    // counters. The rebuild pass then repopulates the hashmap from the persistent dense probe pool.
     RCPatchClearPC pc{}; pc.total_buckets = _total_buckets; pc.num_cascades = RC_CASCADES;
     PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
     int64_t l = _rd->compute_list_begin();
     _rd->compute_list_bind_compute_pipeline(l, _patch_clear_pipeline);
     _rd->compute_list_bind_uniform_set(l, _patch_clear_set0, 0);
     _rd->compute_list_set_push_constant(l, b, b.size());
-    _rd->compute_list_dispatch(l, Math::ceil((float) RC_CASCADES / 256.0f), 1, 1);
+    _rd->compute_list_dispatch(l, Math::ceil((float) _total_buckets / 256.0f), 1, 1);
     _rd->compute_list_end();
 }
 
-// Persistent-bucket eviction. Skipped entirely when neither the camera view nor the voxel origin
-// moved since last frame — a stationary view reveals no new cells, so there's nothing to make room
-// for and evicting would only churn cells that are about to be re-touched anyway.
-void CRadianceCascade::_dispatch_patch_evict()
+// Rebuild the freshly-cleared hashmap from the persistent dense pool: one thread per dense id over each
+// cascade's pcap id space — alive ids re-insert (key→id), aged-out ids are freed to the free-list. Runs
+// every frame (the map is transient); cascades touch disjoint hashmap + free-list regions so they share
+// one compute list (no inter-cascade barrier). The trailing barrier orders it before add reads the map.
+void CRadianceCascade::_dispatch_patch_rebuild()
 {
-    bool moved = (_pending_view != _evict_prev_view) || (_vox_origin != _evict_prev_origin);
-    if (!moved) return;
-    _evict_prev_view = _pending_view;
-    _evict_prev_origin = _vox_origin;
-
-    RCPatchEvictPC pc{}; pc.frame = _frame_index; pc.evict_age = _evict_age; pc.total_buckets = _total_buckets;
-    PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
     int64_t l = _rd->compute_list_begin();
-    _rd->compute_list_bind_compute_pipeline(l, _patch_evict_pipeline);
-    _rd->compute_list_bind_uniform_set(l, _patch_evict_set0, 0);
-    _rd->compute_list_set_push_constant(l, b, b.size());
-    _rd->compute_list_dispatch(l, Math::ceil((float) _total_buckets / 256.0f), 1, 1);
-    _rd->compute_list_end();
+    _rd->compute_list_bind_compute_pipeline(l, _patch_rebuild_pipeline);
+    _rd->compute_list_bind_uniform_set(l, _patch_rebuild_set0, 0);
+    for (uint32_t c = 0; c < RC_CASCADES; ++c)
+    {
+        RCPatchRebuildPC pc{}; pc.frame = _frame_index; pc.evict_age = _evict_age; pc.cascade = c;
+        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+        _rd->compute_list_set_push_constant(l, b, b.size());
+        _rd->compute_list_dispatch(l, Math::ceil((float) _cascades[c].probe_cap / 64.0f), 1, 1);
+    }
+    _rd->compute_list_end();   // barrier: hashmap repopulated + ids freed before add reads/pops
 }
 
 void CRadianceCascade::_dispatch_patch_add()
@@ -1756,7 +1775,7 @@ void CRadianceCascade::_dispatch_patch_merge()
         {
             RCPatchMergePC rp{}; rp.cascade = (uint32_t) c;
             PackedByteArray rb; rb.resize(sizeof(rp)); memcpy(rb.ptrw(), &rp, sizeof(rp));
-            uint32_t threads = _cascades[c + 1].bucket_cap * _cascades[c].dirs;   // one per (c+1 slot, reduced dir)
+            uint32_t threads = _cascades[c + 1].probe_cap * _cascades[c].dirs;   // one per (c+1 dense id, reduced dir)
             int64_t lr = _rd->compute_list_begin();
             _rd->compute_list_bind_compute_pipeline(lr, _patch_reduce_pipeline);
             _rd->compute_list_bind_uniform_set(lr, _patch_reduce_set0, 0);

@@ -22,7 +22,6 @@ layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_key
 layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
 layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
-layout(set = 0, binding = 10, std430) readonly buffer LastSeen { uint last_seen[]; };    // persistent buckets: gate continuation reads to cells SEEN this frame (no phantom from scrolled-out slots)
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -33,8 +32,7 @@ layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc casc
 layout(set = 0, binding = 8, std430) readonly buffer Reduced { uvec2 reduced_in[]; };
 
 layout(push_constant) uniform PC { uint cascade; uint frame; uint amortize_n; uint _p2; } pc;
-// NB: `frame` here MUST equal the value the ADD pass stamped into last_seen this frame (see the
-// shared per-frame `_frame_index` advanced once, before add) or the gate below rejects every cell.
+// `frame`/`amortize_n` drive the lockstep amortization gate (same values trace uses this frame).
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
 
@@ -48,11 +46,9 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
     for (uint p = 0u; p < MAX_LINEAR; ++p) {
         uvec2 b = buckets[slot];
         if (b.x == EMPTY) return INVALID;
-        // Persistent buckets: a matching key that was NOT seeded this frame is stale (its world cell
-        // isn't covered by the current view / scrolled out of the toroidal grid) — reject it so its
-        // old radiance can't bleed in as a phantom. It's the unique slot for this key, so → INVALID.
-        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key)
-            return (last_seen[b.y] == pc.frame) ? b.y : INVALID;
+        // Dense pool: the hashmap was rebuilt this frame from the ALIVE probes only, and every probe is
+        // keyed by its world cell, so a key match is always a live, correct-location probe — no gate needed.
+        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key) return b.y;
         slot = boff + ((slot - boff + 1u) % bcap);
     }
     return INVALID;

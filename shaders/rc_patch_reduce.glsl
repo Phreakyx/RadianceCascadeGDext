@@ -11,9 +11,9 @@
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0, std430) readonly  buffer Buckets  { uvec2 buckets[]; };
-layout(set = 0, binding = 6, std430) readonly  buffer ProbeRad { uvec2 probe_radiance[]; };
-layout(set = 0, binding = 8, std430) writeonly buffer Reduced  { uvec2 reduced[]; };   // scratch
+layout(set = 0, binding = 6,  std430) readonly  buffer ProbeRad { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 8,  std430) writeonly buffer Reduced  { uvec2 reduced[]; };   // scratch, indexed by id_local
+layout(set = 0, binding = 10, std430) readonly  buffer LastSeen { uint  last_seen[]; }; // per dense id (0 = free)
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -23,8 +23,6 @@ struct CascadeDesc {
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 
 layout(push_constant) uniform PC { uint cascade; uint _p0, _p1, _p2; } pc;   // target cascade c
-
-const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu;
 
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {
     uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
@@ -39,15 +37,14 @@ void main() {
     uint  r    = max(cn.oct_res / cd.oct_res, 1u);   // 2 for the folds this pass runs on
     float rinv = 1.0 / float(r * r);
 
-    uint gid        = gl_GlobalInvocationID.x;
-    uint slot_local = gid / cd.dirs;                 // c+1 probe slot
-    uint rd         = gid % cd.dirs;                 // reduced (coarse) direction index
-    if (slot_local >= cn.bucket_cap) return;
+    uint gid      = gl_GlobalInvocationID.x;
+    uint id_local = gid / cd.dirs;                   // c+1 DENSE id
+    uint rd       = gid % cd.dirs;                   // reduced (coarse) direction index
+    if (id_local >= cn.probe_cap) return;
 
-    uvec2 bk = buckets[cn.bucket_off + slot_local];
-    if (bk.x == EMPTY || bk.y == INVALID) return;    // empty c+1 slot — merge never reads it
+    uint nid = cn.probe_off + id_local;              // c+1 global dense id
+    if (last_seen[nid] == 0u) return;                // free id — merge never reads it
 
-    uint nid = cn.probe_off + slot_local;            // c+1 global index
     uint x = rd % cd.oct_res, y = rd / cd.oct_res;
 
     vec4 acc = vec4(0.0);
@@ -58,6 +55,6 @@ void main() {
     }
     acc *= rinv;
 
-    reduced[slot_local * cd.dirs + rd] =
+    reduced[id_local * cd.dirs + rd] =
         uvec2(packHalf2x16(acc.rg), packHalf2x16(vec2(acc.b, acc.a)));
 }

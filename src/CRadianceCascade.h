@@ -71,11 +71,12 @@ namespace godot
     // rc3d_voxel_emission_mip — downsample one emission mip level.
     struct alignas(16) RCVoxelMipPC { uint32_t dst_res, _p2, _p0, _p1; };
 
-    // rc_patch_clear.glsl — reset per-cascade alloc counters (buckets are PERSISTENT now; not cleared).
+    // rc_patch_clear.glsl — wipe the transient hashmap (buckets→EMPTY) + reset per-cascade live counters.
     struct alignas(16) RCPatchClearPC { uint32_t total_buckets, num_cascades, _b, _c; };
-    // rc_patch_evict.glsl — free persistent slots unseen for > evict_age frames (gated on movement).
-    struct alignas(16) RCPatchEvictPC { uint32_t frame, evict_age, total_buckets, _p; };
-    // rc_patch_add.glsl — find-or-insert probes for a screen-pixel grid over cascades [begin,end).
+    // rc_patch_rebuild.glsl — per dense id: evict aged ids (free-list push) else re-insert (key→id) into
+    // the freshly-cleared hashmap. Dispatched once per cascade over its pcap id space.
+    struct alignas(16) RCPatchRebuildPC { uint32_t frame, evict_age, cascade, _p; };
+    // rc_patch_add.glsl — find-or-allocate probes for a screen-pixel grid over cascades [begin,end).
     struct RCPatchAddPC
     {
         uint32_t screen_width, screen_height, cascade_begin, cascade_end;
@@ -456,9 +457,9 @@ namespace godot
         // ── Per-pipeline dispatch ────────────────────────────────────────────
         // Each wraps one compute pass; the per-frame order lives in dispatch().
         void _dispatch_composite();          // scene + irradiance*albedo*intensity -> output
-        void _dispatch_patch_clear();        // reset per-cascade live counters (buckets persist)
-        void _dispatch_patch_evict();        // reclaim persistent slots unseen too long (movement-gated)
-        void _dispatch_patch_add();          // find-or-insert probes from screen pixels (depth-reprojected)
+        void _dispatch_patch_clear();        // wipe hashmap + reset live counters
+        void _dispatch_patch_rebuild();      // rebuild hashmap from the dense pool + evict aged ids
+        void _dispatch_patch_add();          // find-or-allocate probes from screen pixels (depth-reprojected)
         void _dispatch_patch_trace();        // each probe cone-traces the voxel grid
         void _dispatch_patch_merge();        // merge cascades far->near
         void _dispatch_patch_gather();       // c0 probes -> half-res irradiance
@@ -604,7 +605,8 @@ namespace godot
         // slot's key / world pos / directional radiance. Shaders share the cascade
         // table at b7; _patch_indirect_buf feeds indirect dispatch of trace/merge.
         RID _patch_clear_shader, _patch_clear_pipeline, _patch_clear_set0;
-        RID _patch_evict_shader, _patch_evict_pipeline, _patch_evict_set0;   // persistent-bucket eviction
+        RID _patch_rebuild_shader, _patch_rebuild_pipeline, _patch_rebuild_set0;   // dense pool → rebuild hashmap + evict
+        RID _patch_freelist, _patch_alloc_state;                                  // recycled dense ids + (free_top,next_id)
         RID _patch_add_shader, _patch_add_pipeline, _patch_add_set0;
         RID _patch_lookup_shader, _patch_lookup_pipeline, _patch_lookup_set0;
         RID _patch_buckets, _patch_alloc, _patch_keys, _patch_world, _patch_live;   // alloc = per-cascade live counters; live = compact live-slot list
@@ -613,12 +615,8 @@ namespace godot
         RID _patch_add_set1, _patch_lookup_set1;                       // depth b0 + normal b1, shared by add/lookup
         RID _probe_radiance, _patch_indirect_buf, _voxel_linear_sampler;
         RID _probe_rad_tag;   // per-slot owner hash (uint/slot), persisted across frames — NOT cleared — for temporal amortization
-        RID _probe_last_seen;   // per-slot last-seen frame index (persistent buckets: live dedup + staleness gate + eviction)
-        // Persistent-bucket eviction is skipped when neither the camera view nor the voxel origin moved
-        // (no new cells revealed → nothing to make room for). These cache last frame's values.
-        Transform3D _evict_prev_view;
-        Vector3     _evict_prev_origin = Vector3(1e30f, 1e30f, 1e30f);
-        uint32_t    _evict_age = 60u;   // free a slot unseen for this many frames
+        RID _probe_last_seen;   // per DENSE id: last-seen frame (0 = free). Live-list dedup (add) + eviction (rebuild).
+        uint32_t    _evict_age = 60u;   // rebuild frees a dense id unseen for more than this many frames
         RID _probe_inspect_buf;   // DEBUG readback (128 u32): dominant c0 probe's per-dir radiance at the inspect pixel
         RID _patch_gather_shader, _patch_gather_pipeline, _patch_gather_set0;
         RID _patch_merge_shader, _patch_merge_pipeline, _patch_merge_set0;
