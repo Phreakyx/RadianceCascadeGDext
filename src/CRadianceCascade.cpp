@@ -2986,16 +2986,21 @@ void CRadianceCascade::_debug_inspect_log()
     const float*    f = (const float*)    data.ptr();
 
     if (u[0] != 1u) { UtilityFunctions::print("[RC inspect] no surface at inspect UV — aim at a lit surface"); return; }
+    String w = String("(") + String::num(f[2], 2) + ", " + String::num(f[3], 2) + ", " + String::num(f[4], 2) + ")";
     if (u[1] != 1u) {
-        UtilityFunctions::print(vformat("[RC inspect] world=(%.2f,%.2f,%.2f)  NO PROBE FOUND (gather miss)", f[2], f[3], f[4]));
+        UtilityFunctions::print(String("[RC inspect] world=") + w + "  NO PROBE FOUND (gather miss)");
         return;
     }
-    UtilityFunctions::print(vformat(
-        "[RC inspect] world=(%.2f,%.2f,%.2f) E=(%.3f,%.3f,%.3f) slot=%u cell=(%d,%d,%d) N=%u",
-        f[2], f[3], f[4], f[5], f[6], f[7], u[8], (int) u[9], (int) u[10], (int) u[11], _trace_amortization));
+    UtilityFunctions::print(String("[RC inspect] world=") + w
+        + " E=(" + String::num(f[5], 4) + ", " + String::num(f[6], 4) + ", " + String::num(f[7], 4) + ")"
+        + " slot=" + itos((int) u[8])
+        + " cell=(" + itos((int) u[9]) + ", " + itos((int) u[10]) + ", " + itos((int) u[11]) + ")"
+        + " N=" + itos((int) _trace_amortization));
     uint32_t dirs = _cascades[0].dirs;
     for (uint32_t d = 0; d < dirs && (16u + d * 4u + 3u) < 128u; ++d) {
         const float* r = f + 16 + d * 4;
-        UtilityFunctions::print(vformat("    dir %2u  rgb=(%.3f, %.3f, %.3f)  T=%.3f", d, r[0], r[1], r[2], r[3]));
+        UtilityFunctions::print(String("    dir ") + itos((int) d)
+            + "  rgb=(" + String::num(r[0], 4) + ", " + String::num(r[1], 4) + ", " + String::num(r[2], 4) + ")"
+            + "  T=" + String::num(r[3], 4));
     }
 }
