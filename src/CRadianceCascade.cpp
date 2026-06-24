@@ -1595,50 +1595,55 @@ void CRadianceCascade::_dispatch_patch_clear()
 
 void CRadianceCascade::_dispatch_patch_add()
 {
-    // One list, two dispatches. They touch DISJOINT cascade hash regions (c0 vs c1..N-1)
-    // and disjoint alloc_count[] entries, so no barrier between them is needed.
-    int64_t l = _rd->compute_list_begin();
-    _rd->compute_list_bind_compute_pipeline(l, _patch_add_pipeline);
-    _rd->compute_list_bind_uniform_set(l, _patch_add_set0, 0);
-    _rd->compute_list_bind_uniform_set(l, _patch_add_set1, 1);   // SAME per-frame depth the gather samples
-
-    // ── Pass A — cascade 0 ONLY, on the GATHER's exact lattice ───────────────────────────
-    // The gather reads only c0 and reconstructs world from this depth at _half_size. Spawn c0
-    // on that identical grid + depth + sampler so every cell the gather can read exists. This
-    // is the run you already verified (magenta vanished). c0 needs no quality knob — its
-    // coverage is dictated by its consumer, not by a density choice.
+    // Deterministic TWO-PHASE insert (race-independent slot ownership). phase 0 = CLAIM: every
+    // cell atomicMins its home slot so the lowest-hash contender owns it regardless of thread
+    // order. phase 1 = COMMIT: the owner writes its slot, losers linear-probe from home+1. The
+    // barrier between phases (separate compute lists) guarantees all claims land before any commit
+    // reads buckets.x. This kills the collision slot-churn that made an amortized probe's radiance
+    // flicker (a colliding cell used to bounce between two slots, neither converging).
+    // Each phase runs the same two passes: Pass A = cascade 0 on the gather's half-res lattice
+    // (its coverage is dictated by its consumer), Pass B = coarse cascades on the seed lattice
+    // (_probe_seed_max_h is the density knob there; coarse cells are large so a seed-vs-gather
+    // sub-lattice offset still lands inside the same cell).
+    for (uint32_t phase = 0u; phase < 2u; ++phase)
     {
-        RCPatchAddPC pc{};
-        pc.screen_width = (uint32_t) _half_size.x;
-        pc.screen_height = (uint32_t) _half_size.y;
-        pc.cascade_begin = 0u;
-        pc.cascade_end = 1u;
-        pc.z_near = _z_near; pc.z_far = _z_far;
-        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
-        _rd->compute_list_set_push_constant(l, b, b.size());
-        _rd->compute_list_dispatch(l, Math::ceil((float) _half_size.x / 8.0f),
-            Math::ceil((float) _half_size.y / 8.0f), 1);
-    }
+        int64_t l = _rd->compute_list_begin();
+        _rd->compute_list_bind_compute_pipeline(l, _patch_add_pipeline);
+        _rd->compute_list_bind_uniform_set(l, _patch_add_set0, 0);
+        _rd->compute_list_bind_uniform_set(l, _patch_add_set1, 1);   // SAME per-frame depth the gather samples
 
-    // ── Pass B — coarse cascades 1..N-1, on the SEED lattice ─────────────────────────────
-    // _probe_seed_max_h stays the quality knob HERE. Coarse cells are large, so a seed-vs-
-    // gather sub-lattice offset lands inside the same cell and never opens a hole. c0 skipped.
-    {
-        RCPatchAddPC pc{};
-        uint32_t seed_h = MIN((uint32_t) _screen_size.y, (uint32_t) _probe_seed_max_h);
-        uint32_t seed_w = (uint32_t) lround(double(_screen_size.x) * double(seed_h) / double(_screen_size.y));
-        pc.screen_width = seed_w;
-        pc.screen_height = seed_h;
-        pc.cascade_begin = 1u;
-        pc.cascade_end = RC_CASCADES;
-        pc.z_near = _z_near; pc.z_far = _z_far;
-        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
-        _rd->compute_list_set_push_constant(l, b, b.size());
-        _rd->compute_list_dispatch(l, Math::ceil((float) seed_w / 8.0f),
-            Math::ceil((float) seed_h / 8.0f), 1);
-    }
+        {   // Pass A — cascade 0 on the gather's exact half-res lattice
+            RCPatchAddPC pc{};
+            pc.screen_width = (uint32_t) _half_size.x;
+            pc.screen_height = (uint32_t) _half_size.y;
+            pc.cascade_begin = 0u;
+            pc.cascade_end = 1u;
+            pc.z_near = _z_near; pc.z_far = _z_far;
+            pc.phase = phase;
+            PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+            _rd->compute_list_set_push_constant(l, b, b.size());
+            _rd->compute_list_dispatch(l, Math::ceil((float) _half_size.x / 8.0f),
+                Math::ceil((float) _half_size.y / 8.0f), 1);
+        }
 
-    _rd->compute_list_end();
+        {   // Pass B — coarse cascades 1..N-1 on the seed lattice
+            RCPatchAddPC pc{};
+            uint32_t seed_h = MIN((uint32_t) _screen_size.y, (uint32_t) _probe_seed_max_h);
+            uint32_t seed_w = (uint32_t) lround(double(_screen_size.x) * double(seed_h) / double(_screen_size.y));
+            pc.screen_width = seed_w;
+            pc.screen_height = seed_h;
+            pc.cascade_begin = 1u;
+            pc.cascade_end = RC_CASCADES;
+            pc.z_near = _z_near; pc.z_far = _z_far;
+            pc.phase = phase;
+            PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+            _rd->compute_list_set_push_constant(l, b, b.size());
+            _rd->compute_list_dispatch(l, Math::ceil((float) seed_w / 8.0f),
+                Math::ceil((float) seed_h / 8.0f), 1);
+        }
+
+        _rd->compute_list_end();   // barrier: all CLAIMs land before COMMIT; COMMIT lands before trace
+    }
 }
 
 void CRadianceCascade::_dispatch_patch_trace()

@@ -77,7 +77,7 @@ namespace godot
     struct RCPatchAddPC
     {
         uint32_t screen_width, screen_height, cascade_begin, cascade_end;
-        float    z_near, z_far, _p1, _p2;
+        float    z_near, z_far; uint32_t phase, _p2;   // phase: 0 = claim (atomicMin home), 1 = commit
     };
     // rc_patch_indirect.glsl — turn live probe counts into indirect-dispatch args.
     struct alignas(16) RCPatchIndirectPC { uint32_t num_cascades, local_size, _b, _c; };

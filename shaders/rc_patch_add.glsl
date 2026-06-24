@@ -1,18 +1,32 @@
 #[compute]
 #version 450
 
-// Sparse-RC (cascaded, NON-SHARED) — CREATE pass.
-// DETERMINISTIC slot-keyed probes (Sannikov-style): a probe's storage index IS its hash
-// slot, so add/trace/merge/gather all address the same cell to the same slot every frame.
-// No allocation counter as an index → no frame-to-frame reshuffle → stable radiance.
-// alloc_count survives only as a live count for the debug overlay.
+// Sparse-RC (cascaded, NON-SHARED) — CREATE pass. DETERMINISTIC slot-keyed probes.
 //
-// CONTENTION NOTE: every pixel inserts 8 cells × N cascades. On coarse cascades a single
-// cell is touched by thousands of pixels, so insertion is hammered by huge thread contention.
-// find_or_create therefore READS the slot before any atomic: an already-created cell
-// (cur == h, the overwhelmingly common case) returns after a plain coherent read — no atomic,
-// no spin. atomicCompSwap fires ONLY when the slot still reads EMPTY, i.e. once per cell, by
-// the first thread to reach it. This turns a serialized CAS+spin storm into parallel reads.
+// TWO-PHASE, RACE-INDEPENDENT OWNERSHIP. The old single-pass version claimed a slot with the
+// first thread to atomicCompSwap an EMPTY slot — so when two cells collided at a home slot, WHICH
+// cell got the home vs the linear-probe slot depended on thread order, and the assignment could
+// flip frame to frame. Under temporal amortization that slot-churn was fatal: a colliding cell
+// bounced between two storage slots, neither of which stayed put long enough (~N frames) for the
+// rotating directional refresh to converge, so its radiance flickered between two half-stale
+// states (and propagated up the merge continuation onto the floor).
+//
+//   phase 0 (CLAIM):  every cell does atomicMin(buckets[home].x, h). atomicMin is commutative, so
+//                     the LOWEST-hash cell contending a home slot deterministically owns it,
+//                     independent of thread order.
+//   phase 1 (COMMIT): the home owner (buckets[home].x == h) commits at home; a loser (higher-hash
+//                     cell that lost its home) deterministically skips to home+1 and linear-probes
+//                     for an empty slot. A barrier between the phases guarantees every claim has
+//                     landed before any commit reads buckets.x. For a 2-cell collision the lower-
+//                     hash cell ALWAYS wins `home` and the other ALWAYS lands one slot up — same
+//                     slots every frame → amortization converges → no flicker. (3+ cells piling on
+//                     one home can still race for the overflow slots; rare at load factor 0.5.)
+//
+// CONTENTION: every pixel inserts 8 cells × N cascades; a coarse cell is touched by thousands of
+// pixels, all running the SAME cell (same h/key/idx). Claim is idempotent (atomicMin). Commit
+// dedups via atomicCompSwap on buckets[slot].y — the single winner appends to live_list and does
+// the rad_tag bootstrap; probe_keys/world are written identically by every candidate so a torn
+// read is harmless, and they are published before .y so a reader that sees .y has a valid key.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -37,7 +51,7 @@ layout(set = 1, binding = 0) uniform sampler2D depth_input;
 
 layout(push_constant) uniform PC {
     uint  screen_width, screen_height, cascade_begin, cascade_end;
-    float z_near, z_far, _p1, _p2;
+    float z_near, z_far; uint phase, _p2;     // phase: 0 = claim (atomicMin home), 1 = commit
 } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
@@ -55,42 +69,55 @@ uint hash_ivec4(ivec4 k) {
     h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
 }
 
-void find_or_create(uint c, ivec3 cell, vec3 center) {
+// PHASE 0 — reserve the home slot for the lowest-hash contender (order-independent).
+void claim(uint c, ivec3 cell) {
+    CascadeDesc cd = cascades[c];
+    ivec4 key  = ivec4(cell, int(c));
+    uint  h    = hash_ivec4(key); if (h == EMPTY) h = 1u;
+    uint  home = cd.bucket_off + (h % cd.bucket_cap);
+    atomicMin(buckets[home].x, h);
+}
+
+// Publish probe `idx` at `slot`. Keys/world written by every candidate (identical → torn-safe) and
+// published (barrier) before .y; the single atomicCompSwap winner on .y owns rad_tag + live_list.
+void commit_data(uint c, CascadeDesc cd, uint slot, uint idx, uint h, ivec4 key, vec3 center) {
+    probe_keys[idx]  = key;
+    probe_world[idx] = vec4(center, float(c));
+    memoryBarrierBuffer();                                       // key/world visible before idx is published via .y
+    if (atomicCompSwap(buckets[slot].y, INVALID, idx) == INVALID) {
+        uint boot   = (rad_tag[idx] != h) ? 0x80000000u : 0u;   // owner changed → bootstrap all dirs (live_list bit 31)
+        rad_tag[idx] = h;
+        uint live_i = atomicAdd(alloc_count[c], 1u);            // live count AND compact index
+        live_list[cd.probe_off + live_i] = (slot - cd.bucket_off) | boot;
+    }
+}
+
+// PHASE 1 — the home owner commits at home; a loser deterministically probes from home+1.
+void commit(uint c, ivec3 cell, vec3 center) {
     CascadeDesc cd = cascades[c];
     ivec4 key  = ivec4(cell, int(c));
     uint  h    = hash_ivec4(key); if (h == EMPTY) h = 1u;
     uint  base = cd.bucket_off;
-    uint  slot = base + (h % cd.bucket_cap);
-    for (uint p = 0u; p < MAX_LINEAR; ++p) {
-        uint cur = buckets[slot].x;                  // READ first — no atomic on the hot path
-        if (cur == EMPTY) {
-            cur = atomicCompSwap(buckets[slot].x, EMPTY, h);   // claim only an empty slot
-            if (cur == EMPTY) {                                 // we created this cell
-                uint local = slot - base;            // the SLOT is the identity — deterministic, stable
-                uint idx   = cd.probe_off + local;   // probe_off is aligned to bucket_off in the table
-                probe_keys[idx]  = key;
-                probe_world[idx] = vec4(center, float(c));
-                // Temporal amortization: this slot's KEPT radiance (probe_radiance is never cleared) is only
-                // reusable if it still belongs to THIS cell. rad_tag persists across frames; compare owner
-                // hashes. On a mismatch — new cell, recycled slot, or a collision-shuffled slot — flag
-                // bootstrap (live_list bit 31) so trace refreshes ALL directions this frame, not just the
-                // rotating 1/N subset. One writer per slot per frame (the CAS winner) → race-free.
-                uint boot = (rad_tag[idx] != h) ? 0x80000000u : 0u;
-                rad_tag[idx] = h;
-                memoryBarrierBuffer();               // publish key/world before the index becomes visible
-                buckets[slot].y  = idx;
-                uint live_i = atomicAdd(alloc_count[c], 1u);   // live count AND compact index
-                live_list[cd.probe_off + live_i] = local | boot;   // slot index (low 31b) + bootstrap flag (bit 31)
-                return;
-            }
-            // lost the race: cur now holds the winner's hash (h if same cell, else a collision)
+    uint  home = base + (h % cd.bucket_cap);
+    // claim phase set buckets[home].x to the min hash that wants `home`. If that's me I own home;
+    // otherwise I lost it (a lower-hash cell did) → skip home and linear-probe from home+1.
+    uint pstart = (buckets[home].x == h) ? 0u : 1u;
+    for (uint p = pstart; p < MAX_LINEAR; ++p) {
+        uint slot  = base + ((home - base + p) % cd.bucket_cap);
+        uint local = slot - base;
+        uint idx   = cd.probe_off + local;
+        uint cur   = buckets[slot].x;
+        if (p > 0u && cur == EMPTY) {                  // loser: try to claim an empty overflow slot
+            uint prev = atomicCompSwap(buckets[slot].x, EMPTY, h);
+            cur = (prev == EMPTY) ? h : prev;          // won → it's mine; else the winner's hash
         }
-        if (cur == h) {
-            uint idx = buckets[slot].y;              // may be INVALID for a few cycles mid-publish — do NOT spin
-            if (idx == INVALID || probe_keys[idx] == key) return;   // ours (or mid-publish) → done
-            // real hash collision (different key, same h) → fall through to linear probe
+        if (cur == h) {                                // mine: the home I own, or a slot I/my-sibling claimed
+            uint existing = buckets[slot].y;
+            if (existing == INVALID) { commit_data(c, cd, slot, idx, h, key, center); return; }
+            if (probe_keys[existing] == key) return;   // already committed by a sibling pixel of this cell
+            // same hash, different key (rare full-hash collision) → keep probing
         }
-        slot = base + ((slot - base + 1u) % cd.bucket_cap);
+        // occupied by a different hash → next slot
     }
     // chain full (load factor too high) → cell dropped this frame; raise bucket_cap
 }
@@ -111,9 +138,13 @@ void main() {
         vec3  sp = world / s - 0.5;
         ivec3 b  = ivec3(floor(sp));
         for (int o = 0; o < 8; ++o) {
-            ivec3 cell   = b + ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
-            vec3  center = (vec3(cell) + 0.5) * s;
-            find_or_create(c, cell, center);
+            ivec3 cell = b + ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
+            if (pc.phase == 0u) {
+                claim(c, cell);
+            } else {
+                vec3 center = (vec3(cell) + 0.5) * s;
+                commit(c, cell, center);
+            }
         }
     }
 }
