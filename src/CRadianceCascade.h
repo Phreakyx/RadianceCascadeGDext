@@ -84,7 +84,7 @@ namespace godot
     // rc_patch_indirect.glsl — turn live probe counts into indirect-dispatch args.
     struct alignas(16) RCPatchIndirectPC { uint32_t num_cascades, local_size, _b, _c; };
     // rc_patch_trace.glsl — which cascade this dispatch traces.
-    struct alignas(16) RCPatchTracePC { uint32_t cascade, local_trans, frame, amortize_n; float alpha; uint32_t is_top, _p1, _p2; };
+    struct alignas(16) RCPatchTracePC { uint32_t cascade, local_trans, frame, amortize_n; };
 
     // rc_patch_lookup.glsl — debug readout of probes / radiance for one cascade.
     struct alignas(16) RCPatchLookupPC
@@ -305,8 +305,6 @@ namespace godot
         // trace PC; no table rebuild. Slot-keyed probes + persisted radiance make this safe (see rc_patch_add).
         void set_trace_amortization(int v) { _trace_amortization = (uint32_t) CLAMP(v, 1, 64); }
         int  get_trace_amortization() const { return (int) _trace_amortization; }
-        void  set_trace_temporal_alpha(float v) { _trace_temporal_alpha = (float) CLAMP(v, 0.0, 1.0); }
-        float get_trace_temporal_alpha() const { return _trace_temporal_alpha; }
         void  set_gpu_profile(bool v) { _gpu_profile = v; }   // prints per-pass GPU us each frame
         bool  get_gpu_profile() const { return _gpu_profile; }
 
@@ -596,7 +594,6 @@ namespace godot
         bool        _cascade_dirty = false;       // set by the mult setters, consumed at top of dispatch()
         int         _probe_seed_max_h = 1080;
         uint32_t    _trace_amortization = 1u;      // N: full directional refresh spread over N frames (1 = off).
-        float       _trace_temporal_alpha = 0.1f;  // EMA blend for the per-direction running average (0..1; 1 = off). Lower = smoother/laggier.
         // Higher = cheaper trace, more temporal latency. Per-frame trace PC; safe because probes are slot-keyed
         // and probe_radiance persists (rc_patch_add tags each slot's owner so changed slots refresh in full).
         uint32_t    _frame_index = 0u;             // ++ once per trace dispatch; drives the amortization rotation
@@ -615,7 +612,6 @@ namespace godot
         RID _patch_trace_shader, _patch_trace_pipeline, _patch_trace_set0;
         RID _patch_add_set1, _patch_lookup_set1;                       // depth b0 + normal b1, shared by add/lookup
         RID _probe_radiance, _patch_indirect_buf, _voxel_linear_sampler;
-        RID _probe_raw;   // persistent EMA history of the raw interval (temporal running-average; NOT cleared per frame)
         RID _probe_rad_tag;   // per-slot owner hash (uint/slot), persisted across frames — NOT cleared — for temporal amortization
         RID _probe_last_seen;   // per-slot last-seen frame index (persistent buckets: live dedup + staleness gate + eviction)
         // Persistent-bucket eviction is skipped when neither the camera view nor the voxel origin moved

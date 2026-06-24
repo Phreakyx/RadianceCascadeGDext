@@ -81,38 +81,57 @@ void mark_seen(uint c, CascadeDesc cd, uint slot, uint h) {
     live_list[cd.probe_off + live_i] = (slot - cd.bucket_off) | boot;
 }
 
-// Find the cell, or insert it into the first free slot in its probe chain. Persistent: an existing
-// cell is just found (a read) and re-stamped; only a never-yet-inserted cell claims a slot (one-time
-// race, harmless because the slot is permanent thereafter). idx == slot (probe_off == bucket_off).
+// Publish a slot we just claimed (buckets[slot].x == h) for this cell, then mark it seen. idx == slot
+// (probe_off == bucket_off). Siblings of the same cell write identical key/world (torn-safe).
+void publish(uint c, CascadeDesc cd, uint slot, uint h, ivec4 key, vec3 center) {
+    uint owner = buckets[slot].y;
+    if (owner == INVALID) {                              // unpublished → write key/world, claim .y
+        probe_keys[slot]  = key;
+        probe_world[slot] = vec4(center, float(c));
+        memoryBarrierBuffer();                           // key/world visible before .y is published
+        atomicCompSwap(buckets[slot].y, INVALID, slot);
+        owner = buckets[slot].y;
+    }
+    if (owner != INVALID && probe_keys[owner] == key) mark_seen(c, cd, slot, h);
+    // else a different key (rare full-32-bit collision) won the slot → this pixel gives up
+}
+
+// Find the cell, or insert it if absent. CRITICAL: we scan for the existing key FIRST and only insert
+// once we hit EMPTY (chain end = key truly absent). An existing cell is therefore never migrated by a
+// tombstone that opened up earlier in its chain — that migration used to bootstrap the cell for one
+// frame (the "1-frame light burst" during movement) and caused a transient atomic burst. New cells
+// reuse the EARLIEST tombstone (keeps chains compact); only a genuinely-new cell ever does an atomic.
 void touch_cell(uint c, ivec3 cell, vec3 center) {
     CascadeDesc cd = cascades[c];
     ivec4 key  = ivec4(cell, int(c));
     uint  h    = hash_ivec4(key); if (h >= TOMB) h = 1u;     // avoid EMPTY & TOMB sentinels
     uint  base = cd.bucket_off;
-    uint  home = h % cd.bucket_cap;
+    uint  cap  = cd.bucket_cap;
+    uint  home = h % cap;
+    uint  free_p = MAX_LINEAR;                               // offset of earliest reusable (TOMB) slot; MAX = none
     for (uint p = 0u; p < MAX_LINEAR; ++p) {
-        uint slot = base + ((home + p) % cd.bucket_cap);
+        uint slot = base + ((home + p) % cap);
         uint cur  = buckets[slot].x;
-        if (cur == EMPTY || cur == TOMB) {                   // free or tombstoned → claim for a new insert
-            uint prev = atomicCompSwap(buckets[slot].x, cur, h);
-            if (prev != cur && prev != h) continue;          // lost to a DIFFERENT hash → keep probing
-            cur = h;                                          // we (or a same-hash sibling) now own .x here
-            // (if this cell also persists further down the chain past an evicted gap, find returns this
-            //  earlier slot and the old one is orphaned → re-tombstoned by evict later; harmless.)
-        }
-        if (cur == h) {
+        if (cur == h) {                                      // our hash — is it our key?
             uint owner = buckets[slot].y;
-            if (owner == INVALID) {                          // unpublished → write key/world, claim .y
-                probe_keys[slot]  = key;
-                probe_world[slot] = vec4(center, float(c));
-                memoryBarrierBuffer();                       // key/world visible before .y is published
-                atomicCompSwap(buckets[slot].y, INVALID, slot);
-                owner = buckets[slot].y;
-            }
-            if (owner != INVALID && probe_keys[owner] == key) { mark_seen(c, cd, slot, h); return; }
-            // same hash, DIFFERENT key (rare full-32-bit collision) → this isn't my slot, keep probing
+            if (owner != INVALID && probe_keys[owner] == key) { mark_seen(c, cd, slot, h); return; }  // FOUND
+            // same hash, DIFFERENT key (rare full collision) → keep scanning
         }
-        // occupied by a different hash → next slot
+        else if (cur == TOMB) {
+            if (free_p == MAX_LINEAR) free_p = p;            // remember earliest reusable; keep scanning for the key
+        }
+        else if (cur == EMPTY) {                             // chain end → key is ABSENT → insert
+            if (free_p != MAX_LINEAR) {                      // reuse the earliest tombstone (compact chains)
+                uint fslot = base + ((home + free_p) % cap);
+                uint pv = atomicCompSwap(buckets[fslot].x, TOMB, h);
+                if (pv == TOMB || pv == h) { publish(c, cd, fslot, h, key, center); return; }
+                free_p = MAX_LINEAR;                         // tomb taken meanwhile → fall through to this EMPTY
+            }
+            uint pv2 = atomicCompSwap(buckets[slot].x, EMPTY, h);
+            if (pv2 == EMPTY || pv2 == h) { publish(c, cd, slot, h, key, center); return; }
+            // EMPTY grabbed by a different hash this instant → keep probing past it
+        }
+        // else occupied by a different hash → next slot
     }
     // chain full (load too high near this home) → cell skipped this frame; bounded by eviction + load 0.5
 }
@@ -128,14 +147,13 @@ void main() {
 
     for (uint c = pc.cascade_begin; c < pc.cascade_end; ++c) {
         float s = cascades[c].spacing;
-        // create the 8 cells the GATHER will trilinear-read for this surface point
-        // (gather bases at floor(world/s - 0.5); match it exactly so no neighbor is ever missing)
-        vec3  sp = world / s - 0.5;
-        ivec3 b  = ivec3(floor(sp));
-        for (int o = 0; o < 8; ++o) {
-            ivec3 cell   = b + ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
-            vec3  center = (vec3(cell) + 0.5) * s;
-            touch_cell(c, cell, center);
-        }
+        // Insert ONLY the nearest probe cell to this surface point (not all 8 trilinear corners) — 8x
+        // fewer inserts, the big rc_add win. Coverage is collective: any cell that contains visible
+        // surface is the nearest cell of SOME pixel, so a gather's 8 trilinear neighbours are filled in
+        // by adjacent pixels. Cells with no surface in them stay absent (they'd contribute ~nothing and
+        // are down-weighted by the gather's plane weight anyway). Persistent buckets cover edge gaps.
+        ivec3 cell   = ivec3(floor(world / s));         // nearest cell; probes center at (cell+0.5)*s
+        vec3  center = (vec3(cell) + 0.5) * s;
+        touch_cell(c, cell, center);
     }
 }

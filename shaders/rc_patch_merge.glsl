@@ -22,7 +22,6 @@ layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_key
 layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
 layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
-layout(set = 0, binding = 9, std430) readonly buffer ProbeRaw  { uvec2 probe_raw[]; };   // EMA'd raw interval (trace output); merge reads `it` from here, writes merged to ProbeRad
 layout(set = 0, binding = 10, std430) readonly buffer LastSeen { uint last_seen[]; };    // persistent buckets: gate continuation reads to cells SEEN this frame (no phantom from scrolled-out slots)
 
 struct CascadeDesc {
@@ -58,13 +57,8 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
     }
     return INVALID;
 }
-vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // c+1 MERGED radiance + a transmittance
+vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // probe_radiance: this cascade's RAW (own slot) or c+1's MERGED continuation
     uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);
-}
-vec4 samp_raw(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) { // this cascade's EMA'd RAW interval
-    uvec2 p = probe_raw[rad_off + (gidx - probe_off) * dirs + d];
     vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
     return vec4(rg, ba.x, ba.y);
 }
@@ -125,7 +119,11 @@ void main() {
             }
             cont *= inv_wsum;                            // NO rinv — averaging done in the reduce pass
         }
-        vec4 it = samp_raw(idx, cd.rad_off, cd.probe_off, cd.dirs, dc);   // EMA'd raw (not the in-place merged)
+        // `it` = this cascade's RAW interval at our own slot (trace wrote it this frame for retraced
+        // dirs; kept dirs are skipped by the lockstep gate above, so we never re-read a merged value).
+        // In-place read-then-write is safe: this slot is owned by exactly one thread, and the lockstep
+        // gate stops a kept (already-merged) direction from being folded again (which would compound).
+        vec4 it = samp(idx, cd.rad_off, cd.probe_off, cd.dirs, dc);
         vec3  merged_rad   = it.rgb + it.a * cont.rgb;
         float merged_trans = it.a * cont.a;
         probe_radiance[cd.rad_off + slot_local * cd.dirs + dc] =

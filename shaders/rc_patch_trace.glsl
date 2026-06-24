@@ -14,8 +14,7 @@ layout(set = 0, binding = 0, std430) readonly  buffer Buckets   { uvec2 buckets[
 layout(set = 0, binding = 1, std430) readonly buffer Alloc    { uint alloc_count[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList { uint live_list[]; };
 layout(set = 0, binding = 3, std430) readonly  buffer ProbeData { vec4  probe_world[]; };   // xyz center, w cascade
-layout(set = 0, binding = 6, std430) writeonly buffer ProbeRad  { uvec2 probe_radiance[]; };
-layout(set = 0, binding = 9, std430)          buffer ProbeRaw   { uvec2 probe_raw[]; };   // persistent EMA history of the RAW interval — NOT cleared across frames
+layout(set = 0, binding = 6, std430) writeonly buffer ProbeRad  { uvec2 probe_radiance[]; };   // trace writes the RAW interval; merge folds in the continuation (top cascade: final)
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -24,7 +23,7 @@ struct CascadeDesc {
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 
-layout(push_constant) uniform PC { uint cascade; uint local_trans; uint frame; uint amortize_n; float alpha; uint is_top; uint _p1; uint _p2; } pc;
+layout(push_constant) uniform PC { uint cascade; uint local_trans; uint frame; uint amortize_n; } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu;
 
@@ -59,18 +58,11 @@ void main() {
 
     vec4 r = rc_trace(origin, dir, cd.aperture, cd.t_start, cd.t_end, pc.local_trans);
 
-    // TEMPORAL RUNNING-AVERAGE (EMA) of the RAW interval. The per-frame GPU-level jitter averages to its
-    // mean, so the amortized field stops flickering: a kept direction holds a CONVERGED average rather than
-    // one frozen noisy sample. bootstrap (owner changed → no valid history for this cell) or alpha>=1
-    // hard-sets (alpha=1 ⇒ EMA off = old behaviour). probe_raw persists across frames; the MERGE reads its
-    // `it` from here. The merge writes the merged result to probe_radiance for c<top; the TOP cascade has no
-    // merge pass (no continuation) so we publish its merged==raw straight to probe_radiance here.
-    uint  ridx = cd.rad_off + slot_local * cd.dirs + d;
-    float a    = (bootstrap || pc.alpha >= 1.0) ? 1.0 : pc.alpha;
-    uvec2 pp   = probe_raw[ridx];
-    vec4  prev = vec4(unpackHalf2x16(pp.x), unpackHalf2x16(pp.y));
-    vec4  ema  = mix(prev, r, a);
-    uvec2 packed = uvec2(packHalf2x16(ema.rg), packHalf2x16(vec2(ema.b, ema.a)));
-    probe_raw[ridx] = packed;
-    if (pc.is_top != 0u) probe_radiance[ridx] = packed;
+    // Write the RAW interval straight to probe_radiance. The merge then folds this cascade's
+    // continuation in place (it reads `it` from here for the directions retraced this frame, gated in
+    // lockstep with trace so kept directions keep last frame's already-merged value). The TOP cascade
+    // has no merge, so this raw value IS its final radiance. Persistent buckets give each probe a stable
+    // slot, so amortization no longer needs the old temporal-EMA running-average (that buffer is gone).
+    uint  ridx   = cd.rad_off + slot_local * cd.dirs + d;
+    probe_radiance[ridx] = uvec2(packHalf2x16(r.rg), packHalf2x16(vec2(r.b, r.a)));
 }
