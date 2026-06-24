@@ -147,13 +147,17 @@ void main() {
 
     for (uint c = pc.cascade_begin; c < pc.cascade_end; ++c) {
         float s = cascades[c].spacing;
-        // Insert ONLY the nearest probe cell to this surface point (not all 8 trilinear corners) — 8x
-        // fewer inserts, the big rc_add win. Coverage is collective: any cell that contains visible
-        // surface is the nearest cell of SOME pixel, so a gather's 8 trilinear neighbours are filled in
-        // by adjacent pixels. Cells with no surface in them stay absent (they'd contribute ~nothing and
-        // are down-weighted by the gather's plane weight anyway). Persistent buckets cover edge gaps.
-        ivec3 cell   = ivec3(floor(world / s));         // nearest cell; probes center at (cell+0.5)*s
-        vec3  center = (vec3(cell) + 0.5) * s;
-        touch_cell(c, cell, center);
+        // Insert the 8 cells the GATHER will trilinear-read for this surface point (gather bases at
+        // floor(world/s - 0.5); match it exactly so no neighbour is ever missing). NOTE: nearest-cell-
+        // only was tried (8x cheaper) but undersamples at grazing angles / distance — where adjacent
+        // half-res pixels span several cells, the skipped in-between cells become gather misses (dead
+        // probes on the receding floor). Keep the 8-corner splat; optimise rc_add elsewhere.
+        vec3  sp = world / s - 0.5;
+        ivec3 b  = ivec3(floor(sp));
+        for (int o = 0; o < 8; ++o) {
+            ivec3 cell   = b + ivec3(o & 1, (o >> 1) & 1, (o >> 2) & 1);
+            vec3  center = (vec3(cell) + 0.5) * s;
+            touch_cell(c, cell, center);
+        }
     }
 }
