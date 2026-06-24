@@ -1,6 +1,7 @@
 #[compute]
 #version 450
 #include "rc_trace.glslinc"
+#include "rc_radiance_pack.glslinc"
 // rc_trace(origin, dir, aperture_tan, t_start, t_end) + set 2 backend
 
 // Sparse-RC (cascaded, NON-SHARED) — TRACE pass. Dispatched ONCE PER CASCADE (PC.cascade),
@@ -14,7 +15,7 @@ layout(set = 0, binding = 0, std430) readonly  buffer Buckets   { uvec2 buckets[
 layout(set = 0, binding = 1, std430) readonly buffer Alloc    { uint alloc_count[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList { uint live_list[]; };
 layout(set = 0, binding = 3, std430) readonly  buffer ProbeData { vec4  probe_world[]; };   // xyz center, w cascade
-layout(set = 0, binding = 6, std430) writeonly buffer ProbeRad  { uvec2 probe_radiance[]; };   // trace writes the RAW interval; merge folds in the continuation (top cascade: final)
+layout(set = 0, binding = 6, std430) writeonly buffer ProbeRad { uint probe_radiance[]; };   // packed rgba; merge folds the continuation (top cascade: final)
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -64,5 +65,5 @@ void main() {
     // has no merge, so this raw value IS its final radiance. Persistent buckets give each probe a stable
     // slot, so amortization no longer needs the old temporal-EMA running-average (that buffer is gone).
     uint  ridx   = cd.rad_off + slot_local * cd.dirs + d;
-    probe_radiance[ridx] = uvec2(packHalf2x16(r.rg), packHalf2x16(vec2(r.b, r.a)));
+    probe_radiance[ridx] = rc_pack_radiance(r);
 }

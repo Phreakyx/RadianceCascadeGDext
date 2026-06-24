@@ -1,5 +1,6 @@
 #[compute]
 #version 450
+#include "rc_radiance_pack.glslinc"
 
 // Sparse-RC (cascaded, NON-SHARED) — MERGE. Fold cascade c+1's already-merged result into
 // this cascade's interval: spatial-trilinear across c+1's probes (2x spacing) and angular-
@@ -21,7 +22,7 @@ layout(set = 0, binding = 1, std430) readonly buffer Alloc     { uint  alloc_cou
 layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_keys[]; };
 layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
-layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 6, std430) buffer ProbeRad { uint probe_radiance[]; };
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -29,7 +30,7 @@ struct CascadeDesc {
     uint  probe_off; uint probe_cap; uint rad_off; uint _p0;
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
-layout(set = 0, binding = 8, std430) readonly buffer Reduced { uvec2 reduced_in[]; };
+layout(set = 0, binding = 8, std430) readonly buffer Reduced { uint reduced_in[]; };
 
 layout(push_constant) uniform PC { uint cascade; uint frame; uint amortize_n; uint _p2; } pc;
 // `frame`/`amortize_n` drive the lockstep amortization gate (same values trace uses this frame).
@@ -54,9 +55,8 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
     return INVALID;
 }
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // probe_radiance: this cascade's RAW (own slot) or c+1's MERGED continuation
-    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);
+    uint i = rad_off + (gidx - probe_off) * dirs + d;
+    return rc_unpack_radiance(probe_radiance[i]);   // packed rgba (rgb radiance + transmittance)
 }
 
 void main() {
@@ -106,8 +106,8 @@ void main() {
                 if (nw[o] <= 0.0) continue;
                 vec4 cs;
                 if (r > 1u) {                            // pre-reduced: one tap, dir == dc
-                    uvec2 p = reduced_in[(nidx[o] - cn.probe_off) * cd.dirs + dc];
-                    cs = vec4(unpackHalf2x16(p.x), unpackHalf2x16(p.y));
+                    uint ri = (nidx[o] - cn.probe_off) * cd.dirs + dc;
+                    cs = rc_unpack_radiance(reduced_in[ri]);
                 } else {                                 // r==1: c+1 dirs == c dirs, read directly
                     cs = samp(nidx[o], cn.rad_off, cn.probe_off, cn.dirs, dc);
                 }
@@ -122,7 +122,7 @@ void main() {
         vec4 it = samp(idx, cd.rad_off, cd.probe_off, cd.dirs, dc);
         vec3  merged_rad   = it.rgb + it.a * cont.rgb;
         float merged_trans = it.a * cont.a;
-        probe_radiance[cd.rad_off + slot_local * cd.dirs + dc] =
-            uvec2(packHalf2x16(merged_rad.rg), packHalf2x16(vec2(merged_rad.b, merged_trans)));
+        uint widx = cd.rad_off + slot_local * cd.dirs + dc;
+        probe_radiance[widx] = rc_pack_radiance(vec4(merged_rad, merged_trans));
     }
 }

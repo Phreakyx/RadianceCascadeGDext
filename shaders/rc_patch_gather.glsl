@@ -1,5 +1,6 @@
 #[compute]
 #version 450
+#include "rc_radiance_pack.glslinc"
 
 // Sparse-RC (cascaded, NON-SHARED) — GATHER / INTEGRATE.
 // The merge has folded every cascade down into cascade 0, so each cascade-0 probe now holds
@@ -16,7 +17,7 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D irradiance_out;
 layout(set = 0, binding = 5, std140) uniform CameraData {
     mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view; vec2 jitter; vec2 _pad;
 } cam;
-layout(set = 0, binding = 6, std430) readonly buffer ProbeRad { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 6, std430) readonly buffer ProbeRad { uint probe_radiance[]; };
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -72,9 +73,8 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
     return INVALID;
 }
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {
-    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);   // rgb radiance + cumulative transparency
+    uint i = rad_off + (gidx - probe_off) * dirs + d;
+    return rc_unpack_radiance(probe_radiance[i]);   // rgb radiance + cumulative transparency
 }
 
 void main() {

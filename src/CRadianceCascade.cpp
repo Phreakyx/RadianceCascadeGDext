@@ -489,10 +489,10 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         // probe_world: vec4 (16 B) per slot
         _patch_world = _rd->storage_buffer_create(_total_probes * sizeof(float) * 4);
 
-        // probe_radiance: uvec2 (8 B) per (slot, direction). Trace writes the raw interval here; merge
-        // folds the continuation in place. (The old temporal-EMA `_probe_raw` buffer is gone — persistent
-        // buckets give probes a stable slot, so amortization no longer needs a running-average.)
-        _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t) * 2);
+        // probe_radiance: ONE packed uint (4 B) per (slot, direction) — [exp5|r7|g7|b7|a6], see
+        // rc_radiance_pack.glslinc. Phase-2 compaction (8 B → 4 B) to cut merge's L2 working set /
+        // long-scoreboard stalls; portable (no fp16). Trace writes the raw interval; merge folds in place.
+        _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t));        // packed rgba, 4 B/entry
 
         // DEBUG probe inspector readback (128 u32): the dominant c0 probe's per-direction radiance at the inspect
         // pixel. Always allocated so the gather's set-0 binding 9 is satisfied even when the inspector is off.
@@ -556,7 +556,7 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
             if (r > 1u)
                 reduced_max = MAX(reduced_max, _cascades[c + 1].probe_cap * _cascades[c].dirs);
         }
-        _reduced_radiance = _rd->storage_buffer_create(reduced_max * sizeof(uint32_t) * 2u);  // uvec2
+        _reduced_radiance = _rd->storage_buffer_create(reduced_max * sizeof(uint32_t));        // packed rgba, 4 B
         ERR_FAIL_COND_MSG(!_reduced_radiance.is_valid(), "RC: reduced scratch buffer failed");
 
         Ref<RDSamplerState> s; s.instantiate();

@@ -1,5 +1,6 @@
 #[compute]
 #version 450
+#include "rc_radiance_pack.glslinc"
 
 // Sparse-RC (cascaded, NON-SHARED) — LOOKUP / DEBUG.
 // Find the pixel's probe in ONE selected cascade (pc.cascade) within that cascade's own
@@ -19,7 +20,7 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D debug_out;
 layout(set = 0, binding = 5, std140) uniform CameraData {
     mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view; vec2 jitter; vec2 _pad;
 } cam;
-layout(set = 0, binding = 6, std430) readonly buffer ProbeRad { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 6, std430) readonly buffer ProbeRad { uint probe_radiance[]; };
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -73,9 +74,8 @@ vec3 oct_to_dir(vec2 e) {
     return normalize(v);
 }
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // rgb radiance + a transmittance
-    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);
+    uint i = rad_off + (gidx - probe_off) * dirs + d;
+    return rc_unpack_radiance(probe_radiance[i]);
 }
 vec3 fetch_normal_ws(vec2 uv) {
     vec3 nv = normalize(texture(normal_input, uv).xyz * 2.0 - 1.0);

@@ -1,5 +1,6 @@
 #[compute]
 #version 450
+#include "rc_radiance_pack.glslinc"
 
 // Sparse-RC (cascaded, NON-SHARED) — ANGULAR PRE-REDUCE. Run ONCE per cascade-(c+1) probe,
 // BEFORE merging c+1 into c, ONLY when r = cn.oct_res/cd.oct_res > 1 (the c1<-c2, c3<-c4 folds).
@@ -11,8 +12,8 @@
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 6,  std430) readonly  buffer ProbeRad { uvec2 probe_radiance[]; };
-layout(set = 0, binding = 8,  std430) writeonly buffer Reduced  { uvec2 reduced[]; };   // scratch, indexed by id_local
+layout(set = 0, binding = 6, std430) readonly  buffer ProbeRad { uint probe_radiance[]; };
+layout(set = 0, binding = 8, std430) writeonly buffer Reduced  { uint reduced[]; };   // scratch, indexed by id_local
 layout(set = 0, binding = 10, std430) readonly  buffer LastSeen { uint  last_seen[]; }; // per dense id (0 = free)
 
 struct CascadeDesc {
@@ -25,9 +26,8 @@ layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc casc
 layout(push_constant) uniform PC { uint cascade; uint _p0, _p1, _p2; } pc;   // target cascade c
 
 vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {
-    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);
+    uint i = rad_off + (gidx - probe_off) * dirs + d;
+    return rc_unpack_radiance(probe_radiance[i]);
 }
 
 void main() {
@@ -55,6 +55,6 @@ void main() {
     }
     acc *= rinv;
 
-    reduced[id_local * cd.dirs + rd] =
-        uvec2(packHalf2x16(acc.rg), packHalf2x16(vec2(acc.b, acc.a)));
+    uint widx = id_local * cd.dirs + rd;
+    reduced[widx] = rc_pack_radiance(acc);
 }

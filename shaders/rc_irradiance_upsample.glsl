@@ -1,6 +1,7 @@
 #[compute]
 #version 450
 #define GATHER_SET 2
+#include "rc_radiance_pack.glslinc"
 #include "rc_patch_gather_inc.glslinc"
 
 // Sparse-RC — IRRADIANCE UPSAMPLE. Joint-bilateral upsample of the half-res gather output to

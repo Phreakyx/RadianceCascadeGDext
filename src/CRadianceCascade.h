@@ -613,7 +613,7 @@ namespace godot
         RID _patch_indirect_shader, _patch_indirect_pipeline, _patch_indirect_set0;
         RID _patch_trace_shader, _patch_trace_pipeline, _patch_trace_set0;
         RID _patch_add_set1, _patch_lookup_set1;                       // depth b0 + normal b1, shared by add/lookup
-        RID _probe_radiance, _patch_indirect_buf, _voxel_linear_sampler;
+        RID _probe_radiance, _patch_indirect_buf, _voxel_linear_sampler;   // probe_radiance = packed rgba uint (Phase-2)
         RID _probe_rad_tag;   // per-slot owner hash (uint/slot), persisted across frames — NOT cleared — for temporal amortization
         RID _probe_last_seen;   // per DENSE id: last-seen frame (0 = free). Live-list dedup (add) + eviction (rebuild).
         uint32_t    _evict_age = 60u;   // rebuild frees a dense id unseen for more than this many frames
@@ -621,7 +621,7 @@ namespace godot
         RID _patch_gather_shader, _patch_gather_pipeline, _patch_gather_set0;
         RID _patch_merge_shader, _patch_merge_pipeline, _patch_merge_set0;
         RID _patch_reduce_shader, _patch_reduce_pipeline, _patch_reduce_set0;   // angular pre-reduce before a merge with ratio>1
-        RID _reduced_radiance;     // angular pre-reduce scratch (uvec2 per (slot,dir)), reused per fold
+        RID _reduced_radiance;     // angular pre-reduce scratch (packed rgba uint per (slot,dir)), reused per fold
 
         // ── Voxel grid (level 0) ──
         // Camera-centred radiance grid: the trace target. Toroidal addressing —

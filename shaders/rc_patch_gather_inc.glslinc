@@ -21,7 +21,7 @@ layout(set = GATHER_SET, binding = 2, std430) readonly buffer GProbeKeys { ivec4
 layout(set = GATHER_SET, binding = 5, std140) uniform GCameraData {
     mat4 inv_proj; mat4 inv_view; mat4 fwd_proj; mat4 fwd_view; vec2 jitter; vec2 _pad;
 } cam;
-layout(set = GATHER_SET, binding = 6, std430) readonly buffer GProbeRad  { uvec2 probe_radiance[]; };
+layout(set = GATHER_SET, binding = 6, std430) readonly buffer GProbeRad  { uint        probe_radiance[]; };
 layout(set = GATHER_SET, binding = 7, std430) readonly buffer GCascades  { CascadeDesc cascades[]; };
 
 uint g_hash_ivec4(ivec4 k) {
@@ -46,9 +46,8 @@ vec3 g_oct_to_dir(vec2 e) {
     return normalize(v);
 }
 vec4 g_samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {
-    uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
-    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
-    return vec4(rg, ba.x, ba.y);   // rgb radiance + residual transparency
+    uint i = rad_off + (gidx - probe_off) * dirs + d;
+    return rc_unpack_radiance(probe_radiance[i]);   // rgb radiance + residual transparency
 }
 
 // Reconstruct world from a pixel + linear depth at an arbitrary resolution (pass the dims).
