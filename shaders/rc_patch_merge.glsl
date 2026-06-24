@@ -23,6 +23,7 @@ layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_wor
 layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
 layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
 layout(set = 0, binding = 9, std430) readonly buffer ProbeRaw  { uvec2 probe_raw[]; };   // EMA'd raw interval (trace output); merge reads `it` from here, writes merged to ProbeRad
+layout(set = 0, binding = 10, std430) readonly buffer LastSeen { uint last_seen[]; };    // persistent buckets: gate continuation reads to cells SEEN this frame (no phantom from scrolled-out slots)
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -33,6 +34,8 @@ layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc casc
 layout(set = 0, binding = 8, std430) readonly buffer Reduced { uvec2 reduced_in[]; };
 
 layout(push_constant) uniform PC { uint cascade; uint frame; uint amortize_n; uint _p2; } pc;
+// NB: `frame` here MUST equal the value the ADD pass stamped into last_seen this frame (see the
+// shared per-frame `_frame_index` advanced once, before add) or the gate below rejects every cell.
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu, MAX_LINEAR = 64u;
 
@@ -41,12 +44,16 @@ uint hash_ivec4(ivec4 k) {
     h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
 }
 uint find_in_region(ivec4 key, uint boff, uint bcap) {
-    uint h = hash_ivec4(key); if (h == EMPTY) h = 1u;
+    uint h = hash_ivec4(key); if (h >= 0xfffffffeu) h = 1u;   // avoid EMPTY(ffffffff) & TOMB(fffffffe)
     uint slot = boff + (h % bcap);
     for (uint p = 0u; p < MAX_LINEAR; ++p) {
         uvec2 b = buckets[slot];
         if (b.x == EMPTY) return INVALID;
-        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key) return b.y;
+        // Persistent buckets: a matching key that was NOT seeded this frame is stale (its world cell
+        // isn't covered by the current view / scrolled out of the toroidal grid) — reject it so its
+        // old radiance can't bleed in as a phantom. It's the unique slot for this key, so → INVALID.
+        if (b.x == h && b.y != INVALID && probe_keys[b.y] == key)
+            return (last_seen[b.y] == pc.frame) ? b.y : INVALID;
         slot = boff + ((slot - boff + 1u) % bcap);
     }
     return INVALID;

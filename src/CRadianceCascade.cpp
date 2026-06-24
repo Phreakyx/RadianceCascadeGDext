@@ -517,8 +517,22 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
             ERR_FAIL_COND_MSG(!_probe_rad_tag.is_valid(), "RC: probe_rad_tag buffer failed");
         }
 
-        // buckets: uvec2 (8 B) per slot  — already sized by _total_buckets, unchanged
-        _patch_buckets = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t) * 2);
+        // buckets: uvec2 (8 B) per slot. PERSISTENT now (the clear pass no longer wipes them), so they
+        // must be initialised to EMPTY/INVALID (0xffffffff) here — a zero-init would read as hash 0.
+        {
+            PackedByteArray bk_init; bk_init.resize(_total_buckets * sizeof(uint32_t) * 2);
+            memset(bk_init.ptrw(), 0xff, bk_init.size());
+            _patch_buckets = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t) * 2, bk_init);
+        }
+
+        // last_seen: uint frame index per slot, persistent. 0 = never seen (any occupied slot is touched
+        // before it's read, and EMPTY slots are skipped by the evict pass, so the init value is inert).
+        {
+            PackedByteArray ls_init; ls_init.resize(_total_buckets * sizeof(uint32_t));
+            memset(ls_init.ptrw(), 0, ls_init.size());
+            _probe_last_seen = _rd->storage_buffer_create(_total_buckets * sizeof(uint32_t), ls_init);
+            ERR_FAIL_COND_MSG(!_probe_last_seen.is_valid(), "RC: last_seen buffer failed");
+        }
 
         // live_list: one slot index per live probe (compact). Indexed by probe_off + live_i,
         // live_i < alloc_count[c] <= bucket_cap, so it fits the same per-cascade regions.
@@ -570,6 +584,7 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
                 pipe = _rd->compute_pipeline_create(sh);
             };
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_clear.glsl", _patch_clear_shader, _patch_clear_pipeline);
+        load_cs("res://addons/radiance_cascade/shaders/rc_patch_evict.glsl", _patch_evict_shader, _patch_evict_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_add.glsl", _patch_add_shader, _patch_add_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_lookup.glsl", _patch_lookup_shader, _patch_lookup_pipeline);
         load_cs("res://addons/radiance_cascade/shaders/rc_patch_indirect.glsl", _patch_indirect_shader, _patch_indirect_pipeline);
@@ -843,9 +858,18 @@ void CRadianceCascade::_build_static_sets()
         Ref<RDUniform> u5; u5.instantiate(); u5->set_uniform_type(RenderingDevice::UNIFORM_TYPE_UNIFORM_BUFFER);
         u5->set_binding(5); u5->add_id(_camera_ubo); u.append(u5);
         u.append(ssbo(7, _cascade_buf));
-        u.append(ssbo(8, _probe_rad_tag));    // ← NEW: per-slot owner tag (temporal amortization)
+        u.append(ssbo(8, _probe_rad_tag));    // ← per-slot owner tag (temporal amortization)
+        u.append(ssbo(10, _probe_last_seen)); // ← persistent: last-seen frame (live dedup + staleness gate)
         _patch_add_set0 = _rd->uniform_set_create(u, _patch_add_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_add_set0.is_valid(), "RC: patch add set failed");
+    }
+
+    {   // evict set0  (persistent-bucket reclaim: buckets rw, last_seen ro)
+        TypedArray<RDUniform> u;
+        u.append(ssbo(0, _patch_buckets));
+        u.append(ssbo(1, _probe_last_seen));
+        _patch_evict_set0 = _rd->uniform_set_create(u, _patch_evict_shader, 0);
+        ERR_FAIL_COND_MSG(!_patch_evict_set0.is_valid(), "RC: patch evict set failed");
     }
 
     {   // indirect set0  (cascade table at b2 here)
@@ -877,6 +901,7 @@ void CRadianceCascade::_build_static_sets()
         u.append(ssbo(7, _cascade_buf));
         u.append(ssbo(8, _reduced_radiance));        // ← NEW: pre-reduced continuation
         u.append(ssbo(9, _probe_raw));               // ← EMA'd raw interval (merge reads `it` from here)
+        u.append(ssbo(10, _probe_last_seen));        // ← staleness gate: continuation only from cells seen this frame
         _patch_merge_set0 = _rd->uniform_set_create(u, _patch_merge_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_merge_set0.is_valid(), "RC: patch merge set failed");
     }
@@ -1303,11 +1328,12 @@ void CRadianceCascade::_free_rids()
     //PATCH
     safe_free(_patch_add_pipeline); safe_free(_patch_add_shader); safe_free(_patch_add_set0);
     safe_free(_patch_clear_pipeline); safe_free(_patch_clear_shader); safe_free(_patch_clear_set0);
+    safe_free(_patch_evict_pipeline); safe_free(_patch_evict_shader); safe_free(_patch_evict_set0);
     safe_free(_patch_lookup_pipeline); safe_free(_patch_lookup_shader); safe_free(_patch_lookup_set0);
     safe_free(_patch_indirect_pipeline); safe_free(_patch_indirect_shader); safe_free(_patch_indirect_set0);
     safe_free(_patch_trace_pipeline); safe_free(_patch_trace_shader); safe_free(_patch_trace_set0);
     safe_free(_patch_world); safe_free(_patch_keys); safe_free(_patch_alloc); safe_free(_patch_buckets); safe_free(_patch_live);
-    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_raw); safe_free(_probe_rad_tag); safe_free(_probe_inspect_buf); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
+    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_raw); safe_free(_probe_rad_tag); safe_free(_probe_last_seen); safe_free(_probe_inspect_buf); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
     safe_free(_patch_gather_shader); safe_free(_patch_gather_pipeline); safe_free(_patch_gather_set0);
     safe_free(_cascade_buf);
     safe_free(_patch_merge_pipeline); safe_free(_patch_merge_shader); safe_free(_patch_merge_set0);
@@ -1436,10 +1462,13 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
 
     _poll_dynamic_lights();   // moved DYNAMIC lights → arm a relight; ticked by ensure_voxels() below
 
+    _frame_index++;   // advance ONCE per frame, before any patch pass — add stamps last_seen with it, and
+                      // trace/merge read the SAME value (amortization rotation + persistent staleness gate).
+
     if (_debug_view == DEBUG_VOXEL) { ensure_voxels(); _dispatch_voxel_debug(); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PATCHES) { _dispatch_patch_clear(); _dispatch_patch_add(); _dispatch_patch_lookup(0); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PATCHES_RADIANCE) { _dispatch_patch_clear(); _dispatch_patch_add(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
-    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PATCHES) { _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_lookup(0); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PATCHES_RADIANCE) { _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
+    if (_debug_view == DEBUG_PROBE_TRACE) { ensure_voxels(); _dispatch_dynamic_voxelize(); _dispatch_patch_clear(); _dispatch_patch_evict(); _dispatch_patch_add(); _dispatch_patch_trace(); _dispatch_patch_lookup(1); _dispatch_composite(); return; }
 
     // DEBUG_OFF and DEBUG_GATHER both run the full chain; composite decides blend vs raw
     if (_gpu_profile) _rd->capture_timestamp("rc_begin");
@@ -1448,6 +1477,7 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     _dispatch_dynamic_voxelize();   if (_gpu_profile) _rd->capture_timestamp("rc_dyn_voxelize");
     _dispatch_dyn_occ_temporal();
     _dispatch_patch_clear();        if (_gpu_profile) _rd->capture_timestamp("rc_clear");
+    _dispatch_patch_evict();        if (_gpu_profile) _rd->capture_timestamp("rc_evict");   // movement-gated
     _dispatch_patch_add();          if (_gpu_profile) _rd->capture_timestamp("rc_add");
     _dispatch_patch_trace();        if (_gpu_profile) _rd->capture_timestamp("rc_trace");
     _dispatch_patch_merge();        if (_gpu_profile) _rd->capture_timestamp("rc_merge");
@@ -1596,11 +1626,33 @@ void CRadianceCascade::_dispatch_composite()
 
 void CRadianceCascade::_dispatch_patch_clear()
 {
+    // Persistent buckets: this only zeroes the per-cascade live counters (one thread group covers
+    // them). The hash table itself is NOT wiped — it survives across frames and is trimmed by evict.
     RCPatchClearPC pc{}; pc.total_buckets = _total_buckets; pc.num_cascades = RC_CASCADES;
     PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
     int64_t l = _rd->compute_list_begin();
     _rd->compute_list_bind_compute_pipeline(l, _patch_clear_pipeline);
     _rd->compute_list_bind_uniform_set(l, _patch_clear_set0, 0);
+    _rd->compute_list_set_push_constant(l, b, b.size());
+    _rd->compute_list_dispatch(l, Math::ceil((float) RC_CASCADES / 256.0f), 1, 1);
+    _rd->compute_list_end();
+}
+
+// Persistent-bucket eviction. Skipped entirely when neither the camera view nor the voxel origin
+// moved since last frame — a stationary view reveals no new cells, so there's nothing to make room
+// for and evicting would only churn cells that are about to be re-touched anyway.
+void CRadianceCascade::_dispatch_patch_evict()
+{
+    bool moved = (_pending_view != _evict_prev_view) || (_vox_origin != _evict_prev_origin);
+    if (!moved) return;
+    _evict_prev_view = _pending_view;
+    _evict_prev_origin = _vox_origin;
+
+    RCPatchEvictPC pc{}; pc.frame = _frame_index; pc.evict_age = _evict_age; pc.total_buckets = _total_buckets;
+    PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+    int64_t l = _rd->compute_list_begin();
+    _rd->compute_list_bind_compute_pipeline(l, _patch_evict_pipeline);
+    _rd->compute_list_bind_uniform_set(l, _patch_evict_set0, 0);
     _rd->compute_list_set_push_constant(l, b, b.size());
     _rd->compute_list_dispatch(l, Math::ceil((float) _total_buckets / 256.0f), 1, 1);
     _rd->compute_list_end();
@@ -1608,58 +1660,49 @@ void CRadianceCascade::_dispatch_patch_clear()
 
 void CRadianceCascade::_dispatch_patch_add()
 {
-    // DETERMINISTIC SORTED-CHAIN insert. CLAIM (phase 0) is run RC_ADD_CLAIM_SWEEPS times, each in
-    // its own compute list so the list barrier publishes that sweep's atomicMins before the next
-    // sweep reads them; colliding cells then converge to hash-SORTED slots independent of thread
-    // order. COMMIT (phase 1) publishes each cell at the slot it settled into. This kills the 3+-
-    // collision overflow race that made an amortized coarse probe bounce between two slots and
-    // flicker (inspector caught a static-camera coarse cell flip-flopping 18236<->18237). Each list
-    // runs Pass A = cascade 0 on the gather's half-res lattice (coverage dictated by its consumer),
+    // PERSISTENT find-or-insert, ONE pass. A seeded cell already in the table is just found and re-
+    // stamped (last_seen = frame) — its slot and amortized radiance are untouched, so re-seeding never
+    // churns slot or existence. Only a brand-new cell claims a free slot (a one-time, harmless race).
+    // Pass A = cascade 0 on the gather's exact half-res lattice (coverage dictated by its consumer);
     // Pass B = coarse cascades on the seed lattice (_probe_seed_max_h density knob; coarse cells are
-    // large so a seed-vs-gather sub-lattice offset still lands inside the same cell).
-    const uint32_t RC_ADD_CLAIM_SWEEPS = 8u;   // >= longest collision chain at load 0.5 (rarely > 4)
+    // large so a seed-vs-gather sub-lattice offset still lands inside the same cell). pc.frame stamps
+    // last_seen and MUST match the merge's frame (shared _frame_index, advanced once before this).
+    int64_t l = _rd->compute_list_begin();
+    _rd->compute_list_bind_compute_pipeline(l, _patch_add_pipeline);
+    _rd->compute_list_bind_uniform_set(l, _patch_add_set0, 0);
+    _rd->compute_list_bind_uniform_set(l, _patch_add_set1, 1);   // SAME per-frame depth the gather samples
 
-    auto run_pass = [&] (uint32_t phase) {
-        int64_t l = _rd->compute_list_begin();
-        _rd->compute_list_bind_compute_pipeline(l, _patch_add_pipeline);
-        _rd->compute_list_bind_uniform_set(l, _patch_add_set0, 0);
-        _rd->compute_list_bind_uniform_set(l, _patch_add_set1, 1);   // SAME per-frame depth the gather samples
+    {   // Pass A — cascade 0 on the gather's exact half-res lattice
+        RCPatchAddPC pc{};
+        pc.screen_width = (uint32_t) _half_size.x;
+        pc.screen_height = (uint32_t) _half_size.y;
+        pc.cascade_begin = 0u;
+        pc.cascade_end = 1u;
+        pc.z_near = _z_near; pc.z_far = _z_far;
+        pc.frame = _frame_index;
+        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+        _rd->compute_list_set_push_constant(l, b, b.size());
+        _rd->compute_list_dispatch(l, Math::ceil((float) _half_size.x / 8.0f),
+            Math::ceil((float) _half_size.y / 8.0f), 1);
+    }
 
-        {   // Pass A — cascade 0 on the gather's exact half-res lattice
-            RCPatchAddPC pc{};
-            pc.screen_width = (uint32_t) _half_size.x;
-            pc.screen_height = (uint32_t) _half_size.y;
-            pc.cascade_begin = 0u;
-            pc.cascade_end = 1u;
-            pc.z_near = _z_near; pc.z_far = _z_far;
-            pc.phase = phase;
-            PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
-            _rd->compute_list_set_push_constant(l, b, b.size());
-            _rd->compute_list_dispatch(l, Math::ceil((float) _half_size.x / 8.0f),
-                Math::ceil((float) _half_size.y / 8.0f), 1);
-        }
+    {   // Pass B — coarse cascades 1..N-1 on the seed lattice
+        RCPatchAddPC pc{};
+        uint32_t seed_h = MIN((uint32_t) _screen_size.y, (uint32_t) _probe_seed_max_h);
+        uint32_t seed_w = (uint32_t) lround(double(_screen_size.x) * double(seed_h) / double(_screen_size.y));
+        pc.screen_width = seed_w;
+        pc.screen_height = seed_h;
+        pc.cascade_begin = 1u;
+        pc.cascade_end = RC_CASCADES;
+        pc.z_near = _z_near; pc.z_far = _z_far;
+        pc.frame = _frame_index;
+        PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
+        _rd->compute_list_set_push_constant(l, b, b.size());
+        _rd->compute_list_dispatch(l, Math::ceil((float) seed_w / 8.0f),
+            Math::ceil((float) seed_h / 8.0f), 1);
+    }
 
-        {   // Pass B — coarse cascades 1..N-1 on the seed lattice
-            RCPatchAddPC pc{};
-            uint32_t seed_h = MIN((uint32_t) _screen_size.y, (uint32_t) _probe_seed_max_h);
-            uint32_t seed_w = (uint32_t) lround(double(_screen_size.x) * double(seed_h) / double(_screen_size.y));
-            pc.screen_width = seed_w;
-            pc.screen_height = seed_h;
-            pc.cascade_begin = 1u;
-            pc.cascade_end = RC_CASCADES;
-            pc.z_near = _z_near; pc.z_far = _z_far;
-            pc.phase = phase;
-            PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
-            _rd->compute_list_set_push_constant(l, b, b.size());
-            _rd->compute_list_dispatch(l, Math::ceil((float) seed_w / 8.0f),
-                Math::ceil((float) seed_h / 8.0f), 1);
-        }
-
-        _rd->compute_list_end();   // barrier: sweep visible to next sweep / COMMIT after CLAIMs / trace after COMMIT
-    };
-
-    for (uint32_t s = 0u; s < RC_ADD_CLAIM_SWEEPS; ++s) run_pass(0u);   // CLAIM sweeps → converge to sorted slots
-    run_pass(1u);                                                       // COMMIT → publish at settled slots
+    _rd->compute_list_end();   // barrier before trace/merge read the table this frame
 }
 
 void CRadianceCascade::_dispatch_patch_trace()
@@ -1682,7 +1725,9 @@ void CRadianceCascade::_dispatch_patch_trace()
         _rd->compute_list_bind_compute_pipeline(l, _patch_trace_pipeline);
         _rd->compute_list_bind_uniform_set(l, _patch_trace_set0, 0);
         _rd->compute_list_bind_uniform_set(l, _trace_voxel_set2, 2);
-        _frame_index++;   // advance the amortization rotation once per frame; read by BOTH trace and merge so they gate the SAME directions
+        // NB: _frame_index is now advanced once at the TOP of dispatch() (before add stamps last_seen),
+        // so add / trace / merge all read the SAME value this frame — required by the persistent-bucket
+        // staleness gate AND the amortization rotation.
         // While the radiance grid is mid-relight (the smoothstep cross-fade armed after every bake, or continuous
         // dynamic-light tracking) it CHANGES every frame. Direction-amortization freezes a DIFFERENT time-sample of
         // that changing grid into each kept direction; the cosine-weighted gather then collapses the now-inconsistent

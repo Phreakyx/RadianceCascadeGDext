@@ -61,7 +61,7 @@ uint hash_ivec4(ivec4 k) {
     h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
 }
 uint find_in_region(ivec4 key, uint boff, uint bcap) {
-    uint h = hash_ivec4(key); if (h == EMPTY) h = 1u;
+    uint h = hash_ivec4(key); if (h >= 0xfffffffeu) h = 1u;   // avoid EMPTY(ffffffff) & TOMB(fffffffe)
     uint slot = boff + (h % bcap);
     for (uint p = 0u; p < MAX_LINEAR; ++p) {
         uvec2 b = buckets[slot];
