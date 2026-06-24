@@ -1623,10 +1623,19 @@ void CRadianceCascade::_dispatch_patch_trace()
         _rd->compute_list_bind_uniform_set(l, _patch_trace_set0, 0);
         _rd->compute_list_bind_uniform_set(l, _trace_voxel_set2, 2);
         _frame_index++;   // advance the amortization rotation once per frame; read by BOTH trace and merge so they gate the SAME directions
+        // While the radiance grid is mid-relight (the smoothstep cross-fade armed after every bake, or continuous
+        // dynamic-light tracking) it CHANGES every frame. Direction-amortization freezes a DIFFERENT time-sample of
+        // that changing grid into each kept direction; the cosine-weighted gather then collapses the now-inconsistent
+        // directions into a low-frequency wobble (the "stray emissive flickering onto the dark floor" report).
+        // Amortization is only correct on a temporally STATIC grid, so force N=1 (re-trace every direction this frame)
+        // whenever a relight is active, and resume the user's N once the grid settles. merge MUST use the SAME value
+        // (it recomputes it from the same per-frame-stable flags below — trace runs first, flags don't change between).
+        const uint32_t eff_amortize = (_relight_frames > 0 || _relight_track_frames > 0 || _clip_relight_frames > 0)
+                                      ? 1u : _trace_amortization;
         for (uint32_t c = 0; c < RC_CASCADES; ++c)
         {
             RCPatchTracePC pc{}; pc.cascade = c; pc.local_trans = _local_transmittance ? 1u : 0u;
-            pc.frame = _frame_index; pc.amortize_n = _trace_amortization;
+            pc.frame = _frame_index; pc.amortize_n = eff_amortize;
             PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
             _rd->compute_list_set_push_constant(l, b, b.size());
             _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, c * 12);  // 3 uints/cascade
@@ -1658,8 +1667,13 @@ void CRadianceCascade::_dispatch_patch_merge()
             _rd->compute_list_end();   // barrier: reduce writes scratch → merge reads it
         }
 
+        // SAME effective N as trace this frame (see _dispatch_patch_trace): force N=1 while a relight is active so a
+        // mid-cross-fade (changing) grid is never frozen per-direction; otherwise the user's _trace_amortization. trace
+        // runs before merge each frame and these flags are stable between, so both compute the identical value (lockstep).
+        const uint32_t eff_amortize = (_relight_frames > 0 || _relight_track_frames > 0 || _clip_relight_frames > 0)
+                                      ? 1u : _trace_amortization;
         RCPatchMergePC pc{}; pc.cascade = (uint32_t) c;
-        pc.frame = _frame_index; pc.amortize_n = _trace_amortization;   // SAME rotation as trace this frame → merge the dirs trace refreshed
+        pc.frame = _frame_index; pc.amortize_n = eff_amortize;   // SAME rotation as trace this frame → merge the dirs trace refreshed
         PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
         int64_t l = _rd->compute_list_begin();
         _rd->compute_list_bind_compute_pipeline(l, _patch_merge_pipeline);
