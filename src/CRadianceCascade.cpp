@@ -54,6 +54,10 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "trace_temporal_alpha", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"),
         "set_trace_temporal_alpha", "get_trace_temporal_alpha");
 
+    ClassDB::bind_method(D_METHOD("set_gpu_profile", "v"), &CRadianceCascade::set_gpu_profile);
+    ClassDB::bind_method(D_METHOD("get_gpu_profile"), &CRadianceCascade::get_gpu_profile);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "gpu_profile"), "set_gpu_profile", "get_gpu_profile");
+
     ClassDB::bind_method(D_METHOD("set_debug_inspect", "v"), &CRadianceCascade::set_debug_inspect);
     ClassDB::bind_method(D_METHOD("get_debug_inspect"), &CRadianceCascade::get_debug_inspect);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_inspect"), "set_debug_inspect", "get_debug_inspect");

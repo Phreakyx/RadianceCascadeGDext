@@ -307,6 +307,8 @@ namespace godot
         int  get_trace_amortization() const { return (int) _trace_amortization; }
         void  set_trace_temporal_alpha(float v) { _trace_temporal_alpha = (float) CLAMP(v, 0.0, 1.0); }
         float get_trace_temporal_alpha() const { return _trace_temporal_alpha; }
+        void  set_gpu_profile(bool v) { _gpu_profile = v; }   // prints per-pass GPU us each frame
+        bool  get_gpu_profile() const { return _gpu_profile; }
 
         // DEBUG probe inspector: when enabled, the gather logs the dominant c0 probe at debug_inspect_uv every ~15 frames.
         void    set_debug_inspect(bool v)        { _dbg_inspect = v; }
