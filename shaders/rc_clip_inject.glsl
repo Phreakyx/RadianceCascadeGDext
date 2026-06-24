@@ -39,6 +39,23 @@ float clip_vis(vec3 rstart, vec3 L, float reach_vox) {
     return 1.0;
 }
 
+// "Is there a ceiling above me?" — clip_vis marches the level's OWN occupancy toward the sun, but at the
+// coarse levels (L≥3, voxels 2–4 m) a 3–5 m roof is ~1 voxel and the march overshoots/under-resolves it,
+// so a floor UNDER a roof past L0 gets baked with direct sun (the leak). Catch it directly: if any
+// occupancy sits straight above this voxel within reach, it's roofed and cannot see the sun. Starts one
+// voxel up (skip self), so a roof straddling into the cell above is caught even at the coarsest level.
+bool roofed(vec3 rstart) {
+    float R = float(pc.res);
+    int   steps = int(min(R, 32.0));
+    for (int i = 1; i <= steps; ++i) {
+        vec3 r = rstart + vec3(0.0, float(i), 0.0);
+        if (r.y >= R) return false;                                                         // open sky above
+        ivec3 cell = ((ivec3(floor(r)) + pc.phase) % int(R) + int(R)) % int(R);
+        if (imageLoad(radiance, cell).a > 0.5) return true;                                 // ceiling → roofed
+    }
+    return false;
+}
+
 void main() {
     ivec3 lid = ivec3(gl_GlobalInvocationID);
     if (any(greaterThanEqual(lid, pc.slab_dim))) return;
@@ -57,7 +74,7 @@ void main() {
     float R       = float(pc.res);
     vec3  rstart  = vec3(rel(cell)) + 0.5;
     vec3  W       = (vec3(wv) + 0.5) * pc.voxel_size;
-    float svis    = (ndl > 0.0) ? clip_vis(rstart, L, R) : 0.0;
+    float svis    = (ndl > 0.0 && !roofed(rstart)) ? clip_vis(rstart, L, R) : 0.0;
 
     vec3 Lo = em + alb * pc.sun_color * (ndl * svis * 0.31830988618);
 

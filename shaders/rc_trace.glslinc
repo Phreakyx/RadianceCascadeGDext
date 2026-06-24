@@ -184,12 +184,7 @@ vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_
         if (trans < 0.01) return vec4(acc, trans);
 
         float vs = in0 ? rctp.voxel_size : (finest_coarse(W) < 0 ? rctp.voxel_size : clip.lvl[finest_coarse(W)].voxel_size);
-        // In the COARSE region (beyond level 0) there is no SDF to guide skipping, and the cone step can
-        // grow to 4·vs — big enough to stride OVER a thin coarse occluder (e.g. a roof one coarse-voxel
-        // thick), so the up-ray punches through to the sky and the floor below gets a sun/sky leak. Step
-        // exactly one coarse voxel there so every cell along the ray is sampled. Level 0 keeps its fast,
-        // SDF-accelerated cone step.
-        t += in0 ? STEP_FOR(W, diam, vs) : vs;
+        t += STEP_FOR(W, diam, vs);
     }
 
     // Phase 2: [t, t_end) — radiance + transmittance
@@ -213,12 +208,7 @@ vec4 rc_trace(vec3 origin, vec3 dir, float aperture_tan, float t_start, float t_
         if (trans < 0.01) break;
 
         float vs = in0 ? rctp.voxel_size : clip.lvl[finest_coarse(W)].voxel_size;
-        // In the COARSE region (beyond level 0) there is no SDF to guide skipping, and the cone step can
-        // grow to 4·vs — big enough to stride OVER a thin coarse occluder (e.g. a roof one coarse-voxel
-        // thick), so the up-ray punches through to the sky and the floor below gets a sun/sky leak. Step
-        // exactly one coarse voxel there so every cell along the ray is sampled. Level 0 keeps its fast,
-        // SDF-accelerated cone step.
-        t += in0 ? STEP_FOR(W, diam, vs) : vs;
+        t += STEP_FOR(W, diam, vs);
     }
     return vec4(acc, trans);
 }
