@@ -22,6 +22,7 @@ layout(set = 0, binding = 2, std430) readonly buffer ProbeKeys { ivec4 probe_key
 layout(set = 0, binding = 3, std430) readonly buffer ProbeData { vec4  probe_world[]; };
 layout(set = 0, binding = 4, std430) readonly buffer LiveList  { uint  live_list[]; };      // compact slot list
 layout(set = 0, binding = 6, std430)          buffer ProbeRad  { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 9, std430) readonly buffer ProbeRaw  { uvec2 probe_raw[]; };   // EMA'd raw interval (trace output); merge reads `it` from here, writes merged to ProbeRad
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -50,8 +51,13 @@ uint find_in_region(ivec4 key, uint boff, uint bcap) {
     }
     return INVALID;
 }
-vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // rgb radiance + a transmittance
+vec4 samp(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) {     // c+1 MERGED radiance + a transmittance
     uvec2 p = probe_radiance[rad_off + (gidx - probe_off) * dirs + d];
+    vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
+    return vec4(rg, ba.x, ba.y);
+}
+vec4 samp_raw(uint gidx, uint rad_off, uint probe_off, uint dirs, uint d) { // this cascade's EMA'd RAW interval
+    uvec2 p = probe_raw[rad_off + (gidx - probe_off) * dirs + d];
     vec2 rg = unpackHalf2x16(p.x), ba = unpackHalf2x16(p.y);
     return vec4(rg, ba.x, ba.y);
 }
@@ -112,7 +118,7 @@ void main() {
             }
             cont *= inv_wsum;                            // NO rinv — averaging done in the reduce pass
         }
-        vec4 it = samp(idx, cd.rad_off, cd.probe_off, cd.dirs, dc);
+        vec4 it = samp_raw(idx, cd.rad_off, cd.probe_off, cd.dirs, dc);   // EMA'd raw (not the in-place merged)
         vec3  merged_rad   = it.rgb + it.a * cont.rgb;
         float merged_trans = it.a * cont.a;
         probe_radiance[cd.rad_off + slot_local * cd.dirs + dc] =

@@ -49,6 +49,11 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::INT, "trace_amortization", PROPERTY_HINT_RANGE, "1,64,1"),
         "set_trace_amortization", "get_trace_amortization");
 
+    ClassDB::bind_method(D_METHOD("set_trace_temporal_alpha", "v"), &CRadianceCascade::set_trace_temporal_alpha);
+    ClassDB::bind_method(D_METHOD("get_trace_temporal_alpha"), &CRadianceCascade::get_trace_temporal_alpha);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "trace_temporal_alpha", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"),
+        "set_trace_temporal_alpha", "get_trace_temporal_alpha");
+
     ClassDB::bind_method(D_METHOD("set_debug_inspect", "v"), &CRadianceCascade::set_debug_inspect);
     ClassDB::bind_method(D_METHOD("get_debug_inspect"), &CRadianceCascade::get_debug_inspect);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_inspect"), "set_debug_inspect", "get_debug_inspect");
@@ -488,6 +493,12 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
         // probe_radiance: uvec2 (8 B) per (slot, direction)
         _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t) * 2);
 
+        // probe_raw: persistent EMA history of the RAW interval (trace output), same layout/size as
+        // probe_radiance. NOT cleared per frame — the temporal running-average lives here and the merge
+        // reads its `it` from it. Uninitialized is fine: frame 1 every probe bootstraps (alpha forced to 1).
+        _probe_raw = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t) * 2);
+        ERR_FAIL_COND_MSG(!_probe_raw.is_valid(), "RC: probe_raw buffer failed");
+
         // DEBUG probe inspector readback (128 u32): the dominant c0 probe's per-direction radiance at the inspect
         // pixel. Always allocated so the gather's set-0 binding 9 is satisfied even when the inspector is off.
         {
@@ -853,6 +864,7 @@ void CRadianceCascade::_build_static_sets()
         u.append(ssbo(4, _patch_live));
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
+        u.append(ssbo(9, _probe_raw));               // EMA history: trace reads prev + writes blended raw
         _patch_trace_set0 = _rd->uniform_set_create(u, _patch_trace_shader, 0);
     }
 
@@ -864,6 +876,7 @@ void CRadianceCascade::_build_static_sets()
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
         u.append(ssbo(8, _reduced_radiance));        // ← NEW: pre-reduced continuation
+        u.append(ssbo(9, _probe_raw));               // ← EMA'd raw interval (merge reads `it` from here)
         _patch_merge_set0 = _rd->uniform_set_create(u, _patch_merge_shader, 0);
         ERR_FAIL_COND_MSG(!_patch_merge_set0.is_valid(), "RC: patch merge set failed");
     }
@@ -1294,7 +1307,7 @@ void CRadianceCascade::_free_rids()
     safe_free(_patch_indirect_pipeline); safe_free(_patch_indirect_shader); safe_free(_patch_indirect_set0);
     safe_free(_patch_trace_pipeline); safe_free(_patch_trace_shader); safe_free(_patch_trace_set0);
     safe_free(_patch_world); safe_free(_patch_keys); safe_free(_patch_alloc); safe_free(_patch_buckets); safe_free(_patch_live);
-    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_rad_tag); safe_free(_probe_inspect_buf); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
+    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_raw); safe_free(_probe_rad_tag); safe_free(_probe_inspect_buf); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
     safe_free(_patch_gather_shader); safe_free(_patch_gather_pipeline); safe_free(_patch_gather_set0);
     safe_free(_cascade_buf);
     safe_free(_patch_merge_pipeline); safe_free(_patch_merge_shader); safe_free(_patch_merge_set0);
@@ -1680,6 +1693,7 @@ void CRadianceCascade::_dispatch_patch_trace()
         {
             RCPatchTracePC pc{}; pc.cascade = c; pc.local_trans = _local_transmittance ? 1u : 0u;
             pc.frame = _frame_index; pc.amortize_n = eff_amortize;
+            pc.alpha = _trace_temporal_alpha; pc.is_top = (c == RC_CASCADES - 1u) ? 1u : 0u;   // EMA + top-cascade publish
             PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
             _rd->compute_list_set_push_constant(l, b, b.size());
             _rd->compute_list_dispatch_indirect(l, _patch_indirect_buf, c * 12);  // 3 uints/cascade

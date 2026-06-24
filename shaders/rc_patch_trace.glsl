@@ -15,6 +15,7 @@ layout(set = 0, binding = 1, std430) readonly buffer Alloc    { uint alloc_count
 layout(set = 0, binding = 4, std430) readonly buffer LiveList { uint live_list[]; };
 layout(set = 0, binding = 3, std430) readonly  buffer ProbeData { vec4  probe_world[]; };   // xyz center, w cascade
 layout(set = 0, binding = 6, std430) writeonly buffer ProbeRad  { uvec2 probe_radiance[]; };
+layout(set = 0, binding = 9, std430)          buffer ProbeRaw   { uvec2 probe_raw[]; };   // persistent EMA history of the RAW interval — NOT cleared across frames
 
 struct CascadeDesc {
     float spacing; float t_start; float t_end; float aperture;
@@ -23,7 +24,7 @@ struct CascadeDesc {
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
 
-layout(push_constant) uniform PC { uint cascade; uint local_trans; uint frame; uint amortize_n; } pc;
+layout(push_constant) uniform PC { uint cascade; uint local_trans; uint frame; uint amortize_n; float alpha; uint is_top; uint _p1; uint _p2; } pc;
 
 const uint EMPTY = 0xffffffffu, INVALID = 0xffffffffu;
 
@@ -57,6 +58,19 @@ void main() {
     vec3 dir = oct_to_dir(e);
 
     vec4 r = rc_trace(origin, dir, cd.aperture, cd.t_start, cd.t_end, pc.local_trans);
-    probe_radiance[cd.rad_off + slot_local * cd.dirs + d] =
-        uvec2(packHalf2x16(r.rg), packHalf2x16(vec2(r.b, r.a)));
+
+    // TEMPORAL RUNNING-AVERAGE (EMA) of the RAW interval. The per-frame GPU-level jitter averages to its
+    // mean, so the amortized field stops flickering: a kept direction holds a CONVERGED average rather than
+    // one frozen noisy sample. bootstrap (owner changed → no valid history for this cell) or alpha>=1
+    // hard-sets (alpha=1 ⇒ EMA off = old behaviour). probe_raw persists across frames; the MERGE reads its
+    // `it` from here. The merge writes the merged result to probe_radiance for c<top; the TOP cascade has no
+    // merge pass (no continuation) so we publish its merged==raw straight to probe_radiance here.
+    uint  ridx = cd.rad_off + slot_local * cd.dirs + d;
+    float a    = (bootstrap || pc.alpha >= 1.0) ? 1.0 : pc.alpha;
+    uvec2 pp   = probe_raw[ridx];
+    vec4  prev = vec4(unpackHalf2x16(pp.x), unpackHalf2x16(pp.y));
+    vec4  ema  = mix(prev, r, a);
+    uvec2 packed = uvec2(packHalf2x16(ema.rg), packHalf2x16(vec2(ema.b, ema.a)));
+    probe_raw[ridx] = packed;
+    if (pc.is_top != 0u) probe_radiance[ridx] = packed;
 }
