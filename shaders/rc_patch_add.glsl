@@ -3,24 +3,27 @@
 
 // Sparse-RC (cascaded, NON-SHARED) — CREATE pass. DETERMINISTIC slot-keyed probes.
 //
-// TWO-PHASE, RACE-INDEPENDENT OWNERSHIP. The old single-pass version claimed a slot with the
-// first thread to atomicCompSwap an EMPTY slot — so when two cells collided at a home slot, WHICH
-// cell got the home vs the linear-probe slot depended on thread order, and the assignment could
-// flip frame to frame. Under temporal amortization that slot-churn was fatal: a colliding cell
-// bounced between two storage slots, neither of which stayed put long enough (~N frames) for the
-// rotating directional refresh to converge, so its radiance flickered between two half-stale
-// states (and propagated up the merge continuation onto the floor).
+// DETERMINISTIC SORTED-CHAIN OWNERSHIP. The old single-CAS version claimed a slot with the first
+// thread to atomicCompSwap an EMPTY slot — so when cells collided at a home slot, WHICH cell got
+// home vs the overflow slots depended on thread order, and the assignment flipped frame to frame.
+// The 2-phase atomicMin(home) version fixed 2-cell collisions but NOT 3+: the losers still RACED
+// for home+1/home+2 via an atomicCompSwap in commit (inspector caught a static-camera coarse cell
+// flip-flopping 18236<->18237 every frame). Under temporal amortization that slot-churn is fatal:
+// a colliding cell bounces between two storage slots, each holding a different 1/N-amortized partial
+// state, so its radiance flickers and propagates up the merge continuation onto the floor.
 //
-//   phase 0 (CLAIM):  every cell does atomicMin(buckets[home].x, h). atomicMin is commutative, so
-//                     the LOWEST-hash cell contending a home slot deterministically owns it,
-//                     independent of thread order.
-//   phase 1 (COMMIT): the home owner (buckets[home].x == h) commits at home; a loser (higher-hash
-//                     cell that lost its home) deterministically skips to home+1 and linear-probes
-//                     for an empty slot. A barrier between the phases guarantees every claim has
-//                     landed before any commit reads buckets.x. For a 2-cell collision the lower-
-//                     hash cell ALWAYS wins `home` and the other ALWAYS lands one slot up — same
-//                     slots every frame → amortization converges → no flicker. (3+ cells piling on
-//                     one home can still race for the overflow slots; rare at load factor 0.5.)
+//   CLAIM (phase 0, run RC_ADD_CLAIM_SWEEPS times, barrier between): each cell skips past every
+//     STRICTLY-smaller hash already in its probe chain, then atomicMin(h) at the first slot that is
+//     EMPTY or holds a >= h value. atomicMin is commutative, so each sweep's result is independent
+//     of thread order; repeated sweeps converge to hash-SORTED placement (lowest hash at home, next
+//     at home+1, ...). A fixed cell set therefore yields identical slots every frame regardless of
+//     how many cells collide — killing the overflow race for 3+ collisions too. p is monotonically
+//     non-decreasing across sweeps (atomicMin only lowers slots, so "smaller ahead of me" only
+//     grows), so it converges in <= chain-length sweeps; clusters longer than the sweep budget are
+//     dropped that frame (astronomically rare at load factor 0.5).
+//   COMMIT (phase 1): the claim already placed every cell, so commit just scans the chain to the
+//     slot where buckets.x == h and publishes there (no .x CAS, no race). A barrier between claim
+//     and commit guarantees every atomicMin has landed before commit reads buckets.x.
 //
 // CONTENTION: every pixel inserts 8 cells × N cascades; a coarse cell is touched by thousands of
 // pixels, all running the SAME cell (same h/key/idx). Claim is idempotent (atomicMin). Commit
@@ -69,13 +72,22 @@ uint hash_ivec4(ivec4 k) {
     h ^= h>>15; h *= 2246822519u; h ^= h>>13; return h;
 }
 
-// PHASE 0 — reserve the home slot for the lowest-hash contender (order-independent).
+// CLAIM (one sweep) — skip every strictly-smaller hash already in the chain, then atomicMin at the
+// first EMPTY-or->=h slot. Run RC_ADD_CLAIM_SWEEPS times (barrier between) → hash-sorted, order-
+// independent placement. Idempotent: thousands of pixels emit the same cell and all land the same.
 void claim(uint c, ivec3 cell) {
     CascadeDesc cd = cascades[c];
     ivec4 key  = ivec4(cell, int(c));
     uint  h    = hash_ivec4(key); if (h == EMPTY) h = 1u;
-    uint  home = cd.bucket_off + (h % cd.bucket_cap);
-    atomicMin(buckets[home].x, h);
+    uint  base = cd.bucket_off;
+    uint  home = h % cd.bucket_cap;                              // local home index
+    uint  p    = MAX_LINEAR;                                     // = no insertion point found (chain saturated)
+    for (uint q = 0u; q < MAX_LINEAR; ++q) {
+        uint v = buckets[base + ((home + q) % cd.bucket_cap)].x;
+        if (v == EMPTY || v >= h) { p = q; break; }             // open or a >=h hash → my insertion point
+        // v < h: a strictly-smaller hash sits ahead of me → step past it
+    }
+    if (p < MAX_LINEAR) atomicMin(buckets[base + ((home + p) % cd.bucket_cap)].x, h);
 }
 
 // Publish probe `idx` at `slot`. Keys/world written by every candidate (identical → torn-safe) and
@@ -92,34 +104,28 @@ void commit_data(uint c, CascadeDesc cd, uint slot, uint idx, uint h, ivec4 key,
     }
 }
 
-// PHASE 1 — the home owner commits at home; a loser deterministically probes from home+1.
+// COMMIT — the claim sweeps already placed every cell at the slot where buckets.x == h. Scan the
+// chain to that slot and publish; stop at EMPTY (cluster exceeded the sweep budget → dropped). No
+// .x CAS here, so there is no overflow race. (idx == slot because probe_off == bucket_off == base.)
 void commit(uint c, ivec3 cell, vec3 center) {
     CascadeDesc cd = cascades[c];
     ivec4 key  = ivec4(cell, int(c));
     uint  h    = hash_ivec4(key); if (h == EMPTY) h = 1u;
     uint  base = cd.bucket_off;
-    uint  home = base + (h % cd.bucket_cap);
-    // claim phase set buckets[home].x to the min hash that wants `home`. If that's me I own home;
-    // otherwise I lost it (a lower-hash cell did) → skip home and linear-probe from home+1.
-    uint pstart = (buckets[home].x == h) ? 0u : 1u;
-    for (uint p = pstart; p < MAX_LINEAR; ++p) {
-        uint slot  = base + ((home - base + p) % cd.bucket_cap);
-        uint local = slot - base;
-        uint idx   = cd.probe_off + local;
-        uint cur   = buckets[slot].x;
-        if (p > 0u && cur == EMPTY) {                  // loser: try to claim an empty overflow slot
-            uint prev = atomicCompSwap(buckets[slot].x, EMPTY, h);
-            cur = (prev == EMPTY) ? h : prev;          // won → it's mine; else the winner's hash
-        }
-        if (cur == h) {                                // mine: the home I own, or a slot I/my-sibling claimed
+    uint  home = h % cd.bucket_cap;
+    for (uint p = 0u; p < MAX_LINEAR; ++p) {
+        uint slot = base + ((home + p) % cd.bucket_cap);
+        uint cur  = buckets[slot].x;
+        if (cur == EMPTY) return;                      // chain ended before my slot → dropped this frame
+        if (cur == h) {                                // my sorted slot (or a same-hash sibling pixel)
             uint existing = buckets[slot].y;
-            if (existing == INVALID) { commit_data(c, cd, slot, idx, h, key, center); return; }
+            if (existing == INVALID) { commit_data(c, cd, slot, slot, h, key, center); return; }
             if (probe_keys[existing] == key) return;   // already committed by a sibling pixel of this cell
-            // same hash, different key (rare full-hash collision) → keep probing
+            // same hash, DIFFERENT key (rare full-32-bit collision): no slot was reserved for it →
+            // keep scanning; it hits EMPTY and drops this frame (deterministic; vanishingly rare).
         }
         // occupied by a different hash → next slot
     }
-    // chain full (load factor too high) → cell dropped this frame; raise bucket_cap
 }
 
 void main() {

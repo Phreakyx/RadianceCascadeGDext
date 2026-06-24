@@ -1608,18 +1608,18 @@ void CRadianceCascade::_dispatch_patch_clear()
 
 void CRadianceCascade::_dispatch_patch_add()
 {
-    // Deterministic TWO-PHASE insert (race-independent slot ownership). phase 0 = CLAIM: every
-    // cell atomicMins its home slot so the lowest-hash contender owns it regardless of thread
-    // order. phase 1 = COMMIT: the owner writes its slot, losers linear-probe from home+1. The
-    // barrier between phases (separate compute lists) guarantees all claims land before any commit
-    // reads buckets.x. This kills the collision slot-churn that made an amortized probe's radiance
-    // flicker (a colliding cell used to bounce between two slots, neither converging).
-    // Each phase runs the same two passes: Pass A = cascade 0 on the gather's half-res lattice
-    // (its coverage is dictated by its consumer), Pass B = coarse cascades on the seed lattice
-    // (_probe_seed_max_h is the density knob there; coarse cells are large so a seed-vs-gather
-    // sub-lattice offset still lands inside the same cell).
-    for (uint32_t phase = 0u; phase < 2u; ++phase)
-    {
+    // DETERMINISTIC SORTED-CHAIN insert. CLAIM (phase 0) is run RC_ADD_CLAIM_SWEEPS times, each in
+    // its own compute list so the list barrier publishes that sweep's atomicMins before the next
+    // sweep reads them; colliding cells then converge to hash-SORTED slots independent of thread
+    // order. COMMIT (phase 1) publishes each cell at the slot it settled into. This kills the 3+-
+    // collision overflow race that made an amortized coarse probe bounce between two slots and
+    // flicker (inspector caught a static-camera coarse cell flip-flopping 18236<->18237). Each list
+    // runs Pass A = cascade 0 on the gather's half-res lattice (coverage dictated by its consumer),
+    // Pass B = coarse cascades on the seed lattice (_probe_seed_max_h density knob; coarse cells are
+    // large so a seed-vs-gather sub-lattice offset still lands inside the same cell).
+    const uint32_t RC_ADD_CLAIM_SWEEPS = 8u;   // >= longest collision chain at load 0.5 (rarely > 4)
+
+    auto run_pass = [&] (uint32_t phase) {
         int64_t l = _rd->compute_list_begin();
         _rd->compute_list_bind_compute_pipeline(l, _patch_add_pipeline);
         _rd->compute_list_bind_uniform_set(l, _patch_add_set0, 0);
@@ -1655,8 +1655,11 @@ void CRadianceCascade::_dispatch_patch_add()
                 Math::ceil((float) seed_h / 8.0f), 1);
         }
 
-        _rd->compute_list_end();   // barrier: all CLAIMs land before COMMIT; COMMIT lands before trace
-    }
+        _rd->compute_list_end();   // barrier: sweep visible to next sweep / COMMIT after CLAIMs / trace after COMMIT
+    };
+
+    for (uint32_t s = 0u; s < RC_ADD_CLAIM_SWEEPS; ++s) run_pass(0u);   // CLAIM sweeps → converge to sorted slots
+    run_pass(1u);                                                       // COMMIT → publish at settled slots
 }
 
 void CRadianceCascade::_dispatch_patch_trace()
@@ -3015,6 +3018,11 @@ void CRadianceCascade::_debug_inspect_log()
         return;
     }
     uint32_t ic = (u[13] < (uint32_t) RC_CASCADES) ? u[13] : 0u;
+    // DIAGNOSTIC: is the voxel grid in motion this frame? Perpetually-armed relight (any counter >0)
+    // means the trace marches a cross-fading grid every frame → probe radiance/transmittance can't settle.
+    UtilityFunctions::print(String("[RC relight] frames=") + itos(_relight_frames)
+        + " track=" + itos(_relight_track_frames) + " clip=" + itos(_clip_relight_frames)
+        + " voxel_dirty=" + itos((int) _voxel_dirty));
     UtilityFunctions::print(String("[RC inspect] c=") + itos((int) ic) + " world=" + w
         + " E=(" + String::num(f[5], 4) + ", " + String::num(f[6], 4) + ", " + String::num(f[7], 4) + ")"
         + " slot=" + itos((int) u[8])
