@@ -70,7 +70,11 @@ uint hash_ivec4(ivec4 k) {
 // it keeps its radiance and continues amortizing; a slot reused by a different cell (rad_tag != h,
 // e.g. after eviction) bootstraps all dirs so no stale/wrong-location radiance survives.
 void mark_seen(uint c, CascadeDesc cd, uint slot, uint h) {
-    if (atomicExchange(last_seen[slot], pc.frame) == pc.frame) return;   // already counted this frame
+    // FAST PATH (critical for perf): a coarse cell is touched by thousands of pixels; without this
+    // plain read they'd ALL serialize on one atomic address (rc_add was ~half the frame). Almost every
+    // pixel sees the slot already stamped this frame and returns with no atomic at all.
+    if (last_seen[slot] == pc.frame) return;
+    if (atomicExchange(last_seen[slot], pc.frame) == pc.frame) return;   // lost the first-toucher race
     uint boot   = (rad_tag[slot] != h) ? 0x80000000u : 0u;
     rad_tag[slot] = h;
     uint live_i = atomicAdd(alloc_count[c], 1u);
