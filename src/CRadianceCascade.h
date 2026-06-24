@@ -304,6 +304,14 @@ namespace godot
         void set_trace_amortization(int v) { _trace_amortization = (uint32_t) CLAMP(v, 1, 64); }
         int  get_trace_amortization() const { return (int) _trace_amortization; }
 
+        // DEBUG probe inspector: when enabled, the gather logs the dominant c0 probe at debug_inspect_uv every ~15 frames.
+        void    set_debug_inspect(bool v)        { _dbg_inspect = v; }
+        bool    get_debug_inspect() const        { return _dbg_inspect; }
+        void    set_debug_inspect_uv(Vector2 v)  { _dbg_inspect_uv = v; }
+        Vector2 get_debug_inspect_uv() const     { return _dbg_inspect_uv; }
+        void    set_debug_inspect_follow_mouse(bool v) { _dbg_inspect_follow_mouse = v; }
+        bool    get_debug_inspect_follow_mouse() const { return _dbg_inspect_follow_mouse; }
+
         void set_probe_seed_max_h(int v) { _probe_seed_max_h = MAX(v, 64); }   // coarse-cascade seed lattice height
         int  get_probe_seed_max_h() const { return _probe_seed_max_h; }
 
@@ -541,6 +549,7 @@ namespace godot
 
         // ── Debug ────────────────────────────────────────────────────────────
         void _debug_print_probe_counts();   // blocking readback of _patch_alloc, gated
+        void _debug_inspect_log();          // blocking readback of _probe_inspect_buf, gated
 
         // ════════════════════════════ MEMBER DATA ════════════════════════════
 
@@ -596,6 +605,7 @@ namespace godot
         RID _patch_add_set1, _patch_lookup_set1;                       // depth b0 + normal b1, shared by add/lookup
         RID _probe_radiance, _patch_indirect_buf, _voxel_linear_sampler;
         RID _probe_rad_tag;   // per-slot owner hash (uint/slot), persisted across frames — NOT cleared — for temporal amortization
+        RID _probe_inspect_buf;   // DEBUG readback (128 u32): dominant c0 probe's per-dir radiance at the inspect pixel
         RID _patch_gather_shader, _patch_gather_pipeline, _patch_gather_set0;
         RID _patch_merge_shader, _patch_merge_pipeline, _patch_merge_set0;
         RID _patch_reduce_shader, _patch_reduce_pipeline, _patch_reduce_set0;   // angular pre-reduce before a merge with ratio>1
@@ -759,6 +769,10 @@ namespace godot
         int  _debug_clip_level = 0;                  // 0 = level 0 (_voxel_tex), 1..4 = _clip_grid[L]
         uint64_t _dbg_frame = 0;                     // frame counter for throttling the readback
         bool _dbg_probe_counts = false;              // flip true to enable (or bind to a key)
+        bool     _dbg_inspect = false;               // probe inspector: log the dominant c0 probe at _dbg_inspect_uv
+        bool     _dbg_inspect_follow_mouse = true;   // true: sample under the mouse cursor; false: use _dbg_inspect_uv
+        Vector2  _dbg_inspect_uv = Vector2(0.5f, 0.5f); // screen UV to inspect (0.5,0.5 = centre / crosshair)
+        uint64_t _dbg_inspect_frame = 0;             // separate throttle counter for the inspector readback
 
         // ── Chunk system / async build state ──
         std::unordered_map<int64_t, Chunk> _chunks;   // key = _chunk_key(cx,cy,cz)

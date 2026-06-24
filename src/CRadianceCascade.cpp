@@ -49,6 +49,16 @@ void CRadianceCascade::_bind_methods()
     ADD_PROPERTY(PropertyInfo(Variant::INT, "trace_amortization", PROPERTY_HINT_RANGE, "1,64,1"),
         "set_trace_amortization", "get_trace_amortization");
 
+    ClassDB::bind_method(D_METHOD("set_debug_inspect", "v"), &CRadianceCascade::set_debug_inspect);
+    ClassDB::bind_method(D_METHOD("get_debug_inspect"), &CRadianceCascade::get_debug_inspect);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_inspect"), "set_debug_inspect", "get_debug_inspect");
+    ClassDB::bind_method(D_METHOD("set_debug_inspect_uv", "v"), &CRadianceCascade::set_debug_inspect_uv);
+    ClassDB::bind_method(D_METHOD("get_debug_inspect_uv"), &CRadianceCascade::get_debug_inspect_uv);
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "debug_inspect_uv"), "set_debug_inspect_uv", "get_debug_inspect_uv");
+    ClassDB::bind_method(D_METHOD("set_debug_inspect_follow_mouse", "v"), &CRadianceCascade::set_debug_inspect_follow_mouse);
+    ClassDB::bind_method(D_METHOD("get_debug_inspect_follow_mouse"), &CRadianceCascade::get_debug_inspect_follow_mouse);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_inspect_follow_mouse"), "set_debug_inspect_follow_mouse", "get_debug_inspect_follow_mouse");
+
     ClassDB::bind_method(D_METHOD("set_local_transmittance", "v"), &CRadianceCascade::set_local_transmittance);
     ClassDB::bind_method(D_METHOD("get_local_transmittance"), &CRadianceCascade::get_local_transmittance);
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "local_transmittance"),
@@ -121,6 +131,22 @@ void CRadianceCascade::_ready()
 void CRadianceCascade::_process(double delta)
 {
     if (Engine::get_singleton()->is_editor_hint()) return;
+
+    // DEBUG probe inspector: while following the mouse, sample the probe under the cursor (main thread → safe).
+    // The render side just reads _dbg_inspect_uv. Lets you hover a view-dependent error (mouse freed / paused)
+    // instead of aiming the crosshair at it. Needs a FREE mouse; with a captured mouse set a manual UV instead.
+    if (_dbg_inspect && _dbg_inspect_follow_mouse)
+    {
+        if (Viewport* vp = get_viewport())
+        {
+            Vector2 sz = vp->get_visible_rect().size;
+            if (sz.x > 0.0f && sz.y > 0.0f)
+            {
+                Vector2 mp = vp->get_mouse_position();
+                _dbg_inspect_uv = Vector2(CLAMP(mp.x / sz.x, 0.0f, 1.0f), CLAMP(mp.y / sz.y, 0.0f, 1.0f));
+            }
+        }
+    }
 
     _current_active_camera = _find_camera();
 
@@ -458,6 +484,14 @@ void CRadianceCascade::_init_pipelines(Vector2i screen_size)
 
         // probe_radiance: uvec2 (8 B) per (slot, direction)
         _probe_radiance = _rd->storage_buffer_create(_total_rad * sizeof(uint32_t) * 2);
+
+        // DEBUG probe inspector readback (128 u32): the dominant c0 probe's per-direction radiance at the inspect
+        // pixel. Always allocated so the gather's set-0 binding 9 is satisfied even when the inspector is off.
+        {
+            PackedByteArray z; z.resize(128 * sizeof(uint32_t)); memset(z.ptrw(), 0, z.size());
+            _probe_inspect_buf = _rd->storage_buffer_create(128 * sizeof(uint32_t), z);
+            ERR_FAIL_COND_MSG(!_probe_inspect_buf.is_valid(), "RC: probe_inspect buffer failed");
+        }
 
         // probe_rad_tag: uint owner-hash per slot. Persisted across frames (never per-frame cleared) so the
         // trace can tell whether a slot's KEPT radiance still belongs to the current cell (temporal amortization).
@@ -981,6 +1015,7 @@ void CRadianceCascade::_build_static_sets()
         c5->set_binding(5); c5->add_id(_camera_ubo); u.append(c5);
         u.append(ssbo(6, _probe_radiance));
         u.append(ssbo(7, _cascade_buf));
+        u.append(ssbo(9, _probe_inspect_buf));   // DEBUG inspector dump target
         _patch_gather_set0 = _rd->uniform_set_create(u, _patch_gather_shader, 0);
     }
 
@@ -1256,7 +1291,7 @@ void CRadianceCascade::_free_rids()
     safe_free(_patch_indirect_pipeline); safe_free(_patch_indirect_shader); safe_free(_patch_indirect_set0);
     safe_free(_patch_trace_pipeline); safe_free(_patch_trace_shader); safe_free(_patch_trace_set0);
     safe_free(_patch_world); safe_free(_patch_keys); safe_free(_patch_alloc); safe_free(_patch_buckets); safe_free(_patch_live);
-    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_rad_tag); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
+    safe_free(_patch_add_set1); safe_free(_patch_lookup_set1); safe_free(_probe_radiance); safe_free(_probe_rad_tag); safe_free(_probe_inspect_buf); safe_free(_patch_indirect_buf); safe_free(_voxel_linear_sampler);
     safe_free(_patch_gather_shader); safe_free(_patch_gather_pipeline); safe_free(_patch_gather_set0);
     safe_free(_cascade_buf);
     safe_free(_patch_merge_pipeline); safe_free(_patch_merge_shader); safe_free(_patch_merge_set0);
@@ -1406,6 +1441,7 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     _dispatch_composite();          if (_gpu_profile) _rd->capture_timestamp("rc_composite");
 
     _debug_print_probe_counts();
+    _debug_inspect_log();
 }
 
 
@@ -1694,6 +1730,11 @@ void CRadianceCascade::_dispatch_patch_gather()
     pc.screen_height = _half_size.y;
     pc.z_near = _z_near; pc.z_far = _z_far;
     pc.sky_color[0] = _sky_color.x; pc.sky_color[1] = _sky_color.y; pc.sky_color[2] = _sky_color.z;
+    // DEBUG probe inspector: aim the in-shader dump at _dbg_inspect_uv (half-res px). 0xffffffff disables it.
+    if (_dbg_inspect) {
+        pc._p0 = (uint32_t) CLAMP((int) (_dbg_inspect_uv.x * (float) _half_size.x), 0, (int) _half_size.x - 1);
+        pc._p1 = (uint32_t) CLAMP((int) (_dbg_inspect_uv.y * (float) _half_size.y), 0, (int) _half_size.y - 1);
+    } else { pc._p0 = 0xffffffffu; pc._p1 = 0xffffffffu; }
     PackedByteArray b; b.resize(sizeof(pc)); memcpy(b.ptrw(), &pc, sizeof(pc));
 
     int64_t l = _rd->compute_list_begin();
@@ -2928,4 +2969,33 @@ void CRadianceCascade::_debug_print_probe_counts()
     }
     line += vformat("| total_live=%d / slots=%d", (uint64_t) total_live, (uint64_t) total_slots);
     UtilityFunctions::print(line);
+}
+
+void CRadianceCascade::_debug_inspect_log()
+{
+    // Gated diagnostic: dump the dominant covering c0 probe at _dbg_inspect_uv — its identity + per-direction
+    // MERGED radiance (rgb) and transmittance (T), i.e. exactly the values the gather integrates. Aim the
+    // crosshair at the bad spot and diff the table across trace_amortization=1 vs N: the directions that differ
+    // are the culprits. Blocking readback — gated, keep off in production.
+    if (!_dbg_inspect || !_probe_inspect_buf.is_valid()) return;
+    if ((_dbg_inspect_frame++ % 15ull) != 0ull) return;             // throttle the blocking readback
+
+    PackedByteArray data = _rd->buffer_get_data(_probe_inspect_buf, 0, 128 * sizeof(uint32_t));
+    if (data.size() < (int) (128 * sizeof(uint32_t))) return;
+    const uint32_t* u = (const uint32_t*) data.ptr();
+    const float*    f = (const float*)    data.ptr();
+
+    if (u[0] != 1u) { UtilityFunctions::print("[RC inspect] no surface at inspect UV — aim at a lit surface"); return; }
+    if (u[1] != 1u) {
+        UtilityFunctions::print(vformat("[RC inspect] world=(%.2f,%.2f,%.2f)  NO PROBE FOUND (gather miss)", f[2], f[3], f[4]));
+        return;
+    }
+    UtilityFunctions::print(vformat(
+        "[RC inspect] world=(%.2f,%.2f,%.2f) E=(%.3f,%.3f,%.3f) slot=%u cell=(%d,%d,%d) N=%u",
+        f[2], f[3], f[4], f[5], f[6], f[7], u[8], (int) u[9], (int) u[10], (int) u[11], _trace_amortization));
+    uint32_t dirs = _cascades[0].dirs;
+    for (uint32_t d = 0; d < dirs && (16u + d * 4u + 3u) < 128u; ++d) {
+        const float* r = f + 16 + d * 4;
+        UtilityFunctions::print(vformat("    dir %2u  rgb=(%.3f, %.3f, %.3f)  T=%.3f", d, r[0], r[1], r[2], r[3]));
+    }
 }

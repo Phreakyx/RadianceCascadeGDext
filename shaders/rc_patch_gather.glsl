@@ -24,6 +24,7 @@ struct CascadeDesc {
     uint  probe_off; uint probe_cap; uint rad_off; uint _p0;
 };
 layout(set = 0, binding = 7, std430) readonly buffer Cascades { CascadeDesc cascades[]; };
+layout(set = 0, binding = 9, std430) buffer Inspect { uint inspect[]; };   // DEBUG: dominant-probe value dump at pc._p0,_p1 (0xffffffff = off)
 
 layout(set = 1, binding = 0) uniform sampler2D depth_input;
 layout(set = 1, binding = 1) uniform sampler2D normal_input;
@@ -127,5 +128,31 @@ void main() {
         E += L * cw * dw;
     }
 	E = (any(isnan(E)) || any(isinf(E))) ? vec3(0.0) : max(E, vec3(0.0));
+    // ---- DEBUG probe inspector: dump the dominant covering c0 probe at the target pixel ----
+    if (pc._p0 != 0xffffffffu && uint(px.x) == pc._p0 && uint(px.y) == pc._p1) {
+        int best_o = -1; float best_w = 0.0;
+        for (int o = 0; o < 8; ++o) if (nw[o] > best_w) { best_w = nw[o]; best_o = o; }
+        inspect[0] = 1u;                                       // a surface pixel was inspected this frame
+        inspect[1] = (best_o >= 0) ? 1u : 0u;                  // a covering probe was found
+        inspect[2] = floatBitsToUint(world.x);
+        inspect[3] = floatBitsToUint(world.y);
+        inspect[4] = floatBitsToUint(world.z);
+        inspect[5] = floatBitsToUint(E.r);
+        inspect[6] = floatBitsToUint(E.g);
+        inspect[7] = floatBitsToUint(E.b);
+        if (best_o >= 0) {
+            uint  gi = nidx[best_o];
+            ivec4 k  = probe_keys[gi];
+            inspect[8]  = gi - cd.probe_off;                   // slot_local = probe identity
+            inspect[9]  = uint(k.x); inspect[10] = uint(k.y); inspect[11] = uint(k.z); inspect[12] = uint(k.w);
+            for (uint d = 0u; d < cd.dirs; ++d) {
+                vec4 r = samp(gi, cd.rad_off, cd.probe_off, cd.dirs, d);   // MERGED radiance.rgb + transmittance.a
+                inspect[16u + d*4u + 0u] = floatBitsToUint(r.r);
+                inspect[16u + d*4u + 1u] = floatBitsToUint(r.g);
+                inspect[16u + d*4u + 2u] = floatBitsToUint(r.b);
+                inspect[16u + d*4u + 3u] = floatBitsToUint(r.a);
+            }
+        }
+    }
     imageStore(irradiance_out, px, vec4(E, 1.0));
 }
