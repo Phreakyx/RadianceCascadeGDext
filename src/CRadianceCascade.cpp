@@ -1480,7 +1480,7 @@ void CRadianceCascade::dispatch(RID p_depth, RID p_normalRoughness, RID p_color,
     // DEBUG_OFF and DEBUG_GATHER both run the full chain; composite decides blend vs raw
     if (_gpu_profile) _rd->capture_timestamp("rc_begin");
     ensure_voxels();
-    _poll_slab_job();
+    _poll_slab_job();               if (_gpu_profile) _rd->capture_timestamp("rc_sdf");   // bake + sync SDF flood (commit-frame spike)
     _dispatch_dynamic_voxelize();   if (_gpu_profile) _rd->capture_timestamp("rc_dyn_voxelize");
     _dispatch_dyn_occ_temporal();
     _dispatch_patch_clear();        if (_gpu_profile) _rd->capture_timestamp("rc_clear");
@@ -2467,7 +2467,7 @@ void CRadianceCascade::_poll_slab_job()
 
         if (job.full_rebuild)
         {                                // L0 teleport only
-            _full_revoxelize(); _sdf_amortize_begin();
+            _full_revoxelize();          // already floods the SDF synchronously (_build_sdf) — no re-flood needed
         }
         else
         {
@@ -2491,7 +2491,12 @@ void CRadianceCascade::_poll_slab_job()
                     _dispatch_clip_slab_inject(L, s.lo, s.dim);
                 }
             }
-            if (L == 0) _sdf_amortize_begin();                 // SDF is the L0 flood only
+            // SDF is the L0 flood only. Flood it SYNCHRONOUSLY here (not amortized over ~4 frames): the
+            // newly-voxelised shell's occupancy is already in the grid, but an amortised/stale SDF lets the
+            // trace's sdf_skip jump PAST the new occluder for those frames → light bursts through until the
+            // flood catches up. One sync flood per commit keeps occlusion in lockstep with occupancy. The
+            // flood is half-res, and commits are throttled (one/frame), so the cost is a bounded local spike.
+            if (L == 0) _build_sdf();
         }
 
         _update_trace_params();
